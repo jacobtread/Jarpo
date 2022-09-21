@@ -1,13 +1,13 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct LatestVersion {
     pub release: String,
     pub snapshot: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VersionType {
     Release,
@@ -19,7 +19,7 @@ pub enum VersionType {
 }
 
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Version {
     pub id: String,
     #[serde(rename = "type")]
@@ -32,7 +32,7 @@ pub struct Version {
     pub release_time: DateTime<Utc>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct VersionManifest {
     pub latest: LatestVersion,
     pub versions: Vec<Version>,
