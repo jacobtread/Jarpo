@@ -21,11 +21,9 @@ mod test {
 
     /// Retrieves a the current version JSON from Minecraft
     /// and check it.
-    #[actix::test]
+    #[tokio::test]
     pub async fn test_get_versions() {
-        let manifest = get_versions()
-            .await
-            .unwrap();
+        let manifest = get_versions().await.unwrap();
         check_version_manifest(manifest);
     }
 
@@ -35,16 +33,15 @@ mod test {
         const LATEST_RELEASE: &str = "1.19.2";
         const LATEST_SNAPSHOT: &str = "1.19.2";
 
-
         // Ensure the latest version block matches the stored
         // constants
-        let latest = parsed.latest;
+        let latest = manifest.latest;
         assert_eq!(latest.snapshot, LATEST_SNAPSHOT);
         assert_eq!(latest.release, LATEST_RELEASE);
 
         // Ensure that none of the versions have an unknown type
         // to ensure that all cases are covered
-        let versions = parsed.versions;
+        let versions = manifest.versions;
         for version in versions {
             assert_ne!(version.version_type, VersionType::Unknown)
         }
@@ -55,8 +52,7 @@ mod test {
     #[test]
     pub fn test_parse_version_manifest() {
         let contents = include_bytes!("../../test/version_manifest.json");
-        let parsed = serde_json::from_slice::<VersionManifest>(contents)
-            .unwrap();
+        let parsed = serde_json::from_slice::<VersionManifest>(contents).unwrap();
 
         check_version_manifest(parsed);
     }

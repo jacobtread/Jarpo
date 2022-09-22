@@ -1,6 +1,6 @@
+use actix_web::ResponseError;
 use std::fmt::{Debug, Display, Formatter, Write};
 use std::io;
-use actix_web::ResponseError;
 
 #[derive(Debug)]
 pub enum VersionsError {
@@ -12,7 +12,7 @@ impl Display for VersionsError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             VersionsError::IO(err) => f.write_str(&format!("IO Error: {}", err)),
-            VersionsError::Request(err) => f.write_str(&format!("Request error: {}", err))
+            VersionsError::Request(err) => f.write_str(&format!("Request error: {}", err)),
         }
     }
 }
@@ -28,5 +28,35 @@ impl From<reqwest::Error> for VersionsError {
 impl From<io::Error> for VersionsError {
     fn from(err: io::Error) -> Self {
         VersionsError::IO(err)
+    }
+}
+
+#[derive(Debug)]
+pub enum BuildToolsError {
+    IO(io::Error),
+    JavaError(JavaError),
+}
+
+#[derive(Debug)]
+pub enum JavaError {
+    MissingJava,
+    UnsupportedJava,
+}
+
+#[derive(Debug)]
+pub enum RepoError {
+    GitError(git2::Error),
+    IO(io::Error),
+}
+
+impl From<io::Error> for RepoError {
+    fn from(err: io::Error) -> Self {
+        RepoError::IO(err)
+    }
+}
+
+impl From<git2::Error> for RepoError {
+    fn from(err: git2::Error) -> Self {
+        RepoError::GitError(err)
     }
 }

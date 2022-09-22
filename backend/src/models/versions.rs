@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::iter::Map;
 
 #[derive(Debug, Deserialize)]
 pub struct LatestVersion {
@@ -18,8 +19,7 @@ pub enum VersionType {
     Unknown,
 }
 
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 pub struct Version {
     pub id: String,
     #[serde(rename = "type")]
@@ -36,4 +36,32 @@ pub struct Version {
 pub struct VersionManifest {
     pub latest: LatestVersion,
     pub versions: Vec<Version>,
+}
+
+/// Structure for version details response from
+/// https://hub.spigotmc.org/versions/{VERSION}.json
+#[serde(rename_all = "camelCase")]
+#[derive(Debug, Deserialize)]
+pub struct SpigotVersion {
+    pub name: String,
+    pub description: String,
+    pub refs: VersionRefs,
+
+    /// Information relating to the version
+    pub information: Option<String>,
+    /// Warnings for this version
+    pub warning: Option<String>,
+    pub tools_version: Option<u16>,
+    pub java_versions: Option<Vec<u16>>,
+}
+
+/// git refs for the different parts of the server
+/// required to build
+#[serde(rename_all = "PascalCase")]
+#[derive(Debug, Deserialize)]
+pub struct VersionRefs {
+    pub build_data: String,
+    pub bukkit: String,
+    pub craft_bukkit: String,
+    pub spigot: String,
 }
