@@ -1,0 +1,12 @@
+{
+	"name": "1.8",
+	"description": "Backport of fixes from 1.8.3",
+	"information": "Last build of Spigot 1.8.0. To update please see http://www.spigotmc.org/",
+	"warning": "***** Please ensure your BuildTools is at least #35 *****",
+	"refs": {
+		"BuildData": "0630ea462a82fdbd93018de7d5ec5e9d3b3c732b",
+		"Bukkit": "1d2509b99fb10b3bd6f597e63805f85b49d5a055",
+		"CraftBukkit": "7019900e276b7c9f6e940debf8529094c7f4da0c",
+		"Spigot": "550ebace4b43adc73854d7d5976e1343eba6fb98"
+	}
+}

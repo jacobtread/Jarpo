@@ -1,0 +1,12 @@
+{
+	"name": "3590",
+	"description": "Jenkins build 3590",
+	"refs": {
+		"BuildData": "d96ad8e1e64b7c35bb632339c23621353be1f028",
+		"Bukkit": "acdb55f9a97c6b361947405717eb710b0200e165",
+		"CraftBukkit": "08cdd26ca9c8fbae22ffa03f79ecc564f015e260",
+		"Spigot": "4c157bb49aa5705967b066e9c2dec5520f720b22"
+	},
+	"toolsVersion": 148,
+	"javaVersions": [61, 63]
+}
