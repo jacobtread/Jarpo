@@ -16,4 +16,4 @@ Cargo.lock
 
 test/build
 
-./build
+build
