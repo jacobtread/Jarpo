@@ -6,18 +6,26 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+# Networking
 actix-web = "4"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-cached = "0.39.0"
-chrono = { version = "0.4.22", features = ["serde"] }
 reqwest = { version = "0.11.12", features = ["json"] }
 tokio = { version = "1.21.1", features = ["full"] }
 
-git2 = "0.15.0"
-
+# Environment & Logging
 log = "0.4.17"
 env_logger = "0.9.1"
 dotenv = "0.15.0"
 
+# Parsing and Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 regex = "1.6.0"
+
+# Hash Checking
+sha1_smol = "1.0.0"
+md5 = "0.7.0"
+
+# Misc
+cached = "0.39.0"
+chrono = { version = "0.4.22", features = ["serde"] }
+git2 = "0.15.0"

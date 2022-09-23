@@ -39,6 +39,7 @@ pub enum BuildToolsError {
     RepoError(RepoError),
     SpigotError(SpigotError),
     JoinError(JoinError),
+    MissingBuildInfo,
 }
 
 #[derive(Debug)]

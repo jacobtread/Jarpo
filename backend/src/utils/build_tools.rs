@@ -1,11 +1,20 @@
+use crate::models::build_tools::{BuildDataInfo, ServerHash};
 use crate::models::errors::{BuildToolsError, RepoError, SpigotError};
 use crate::models::versions::{SpigotVersion, VersionRefs};
-use crate::utils::constants::{SPIGOT_VERSIONS_URL, USER_AGENT};
+use crate::utils::constants::{PARODY_BUILD_TOOLS_VERSION, SPIGOT_VERSIONS_URL, USER_AGENT};
 use crate::utils::net::create_reqwest;
+use actix_web::web::to;
 use git2::{Error, ObjectType, Oid, Repository, ResetType};
-use log::info;
+use log::{info, warn};
+use sha1::digest::FixedOutput;
+use sha1::Sha1;
+use sha1_smol::Sha1;
+use std::fmt::format;
 use std::fs::remove_dir;
+use std::fs::File as SyncFile;
+use std::io;
 use std::path::{Path, PathBuf};
+use tokio::fs::{read, File};
 use tokio::task::{spawn_blocking, JoinError, JoinHandle};
 use tokio::try_join;
 
@@ -115,11 +124,40 @@ async fn get_spigot_version(version: &str) -> Result<SpigotVersion, SpigotError>
     Ok(version)
 }
 
+pub async fn run_build_tools() -> Result<(), BuildToolsError> {
+    let spigot_version = get_spigot_version(version).await?;
+    let build_path = Path::new("build");
+    setup_repositories(build_path, &spigot_version).await?;
+    let build_info = get_build_info(build_path).await?;
+
+    // Check if required version is higher than parody version
+    if let Some(tools_version) = build_info.tools_version {
+        if tools_version > PARODY_BUILD_TOOLS_VERSION {
+            warn!("The build tools version required to build is greater than that which");
+            warn!(
+                "this tool is able to build (required: {}, parody: {}) ",
+                tools_version, PARODY_BUILD_TOOLS_VERSION
+            );
+        }
+    }
+
+    let jar_name = format!("server_{}.jar", info.minecraft_version);
+    let jar_path = path.join(&jar_name);
+
+    if !check_vanilla_jar(&jar_path, &build_info).await {
+        download_vanilla_jar(&jar_path, &build_info)
+    }
+
+    Ok(())
+}
+
 /// Sets up the required repositories by downloading them and setting
 /// the correct commit ref this is done Asynchronously
-pub async fn setup_repositories(path: &Path, version: &str) -> Result<(), BuildToolsError> {
-    let spigot_version = get_spigot_version(version).await?;
-    let refs = &spigot_version.refs;
+pub async fn setup_repositories(
+    path: &Path,
+    version: &SpigotVersion,
+) -> Result<(), BuildToolsError> {
+    let refs = &version.refs;
 
     info!(
         "Setting up repositories in \"{}\" (build_data, bukkit, spigot)",
@@ -135,6 +173,49 @@ pub async fn setup_repositories(path: &Path, version: &str) -> Result<(), BuildT
 
     Ok(())
 }
+
+/// Loads the build_data info configuration
+pub async fn get_build_info(path: &Path) -> Result<BuildDataInfo, BuildToolsError> {
+    let info_path = path.join("build_data/info.json");
+    if !info_path.exists() {
+        return Err(BuildToolsError::MissingBuildInfo);
+    }
+    let info_data = read(info_path).await?;
+    let parsed = serde_json::from_slice::<BuildDataInfo>(&info_data)?;
+    Ok(parsed)
+}
+
+/// Checks whether the locally stored server jar hash matches the one
+/// that we are trying to build. If the hashes don't match or the jar
+/// simply doesn't exist then false is returned
+pub async fn check_vanilla_jar(path: &Path, info: &BuildDataInfo) -> bool {
+    let info_hash = info.get_server_hash();
+    if let Some(info_hash) = info_hash {
+        if !jar_path.exists() {
+            return false;
+        }
+        if let Ok(jar_bytes) = read(path).await {
+            match info_hash {
+                ServerHash::SHA1(hash) => {
+                    let mut hasher = Sha1::from(jar_bytes);
+                    let result = hasher.digest().to_string();
+                    result.eq(hash)
+                }
+                ServerHash::MD5(hash) => {
+                    let result = md5::compute(jar_bytes);
+                    let result_hash = format!("{:x}", result);
+                    result_hash.eq(hash)
+                }
+            }
+        } else {
+            false
+        }
+    } else {
+        path.exists()
+    }
+}
+
+pub async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) {}
 
 #[cfg(test)]
 mod test {
@@ -256,7 +337,7 @@ mod test {
 
             let test_path = Path::new("test/build");
 
-            setup_repositories(test_path, version)
+            setup_repositories(test_path, &parsed)
                 .await
                 .unwrap();
 
@@ -273,7 +354,7 @@ mod test {
         let contents = read(version_file).unwrap();
         let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
         let test_path = Path::new("test/build");
-        setup_repositories(test_path, version)
+        setup_repositories(test_path, &parsed)
             .await
             .unwrap();
         let build_data = Path::new("test/build/build_data");
@@ -288,7 +369,7 @@ mod test {
         let contents = read(version_file).unwrap();
         let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
         let test_path = Path::new("test/build");
-        setup_repositories(test_path, version)
+        setup_repositories(test_path, &parsed)
             .await
             .unwrap();
         let build_data = Path::new("test/build/build_data");

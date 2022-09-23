@@ -1,3 +1,5 @@
+use crate::models::errors::BuildToolsError;
+use regex::Regex;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -51,5 +53,37 @@ impl Default for BuildDataInfo {
             server_url: None,
             spigot_version: None,
         }
+    }
+}
+
+pub enum ServerHash<'a> {
+    SHA1(&'a str),
+    MD5(&'a str),
+}
+
+impl BuildDataInfo {
+    /// Retrieves the server hash value o
+    pub fn get_server_hash(&self) -> Option<ServerHash> {
+        if let Some(server_url) = &self.server_url {
+            let hash = Self::get_hash_from_url(server_url);
+            if let Some(hash) = hash {
+                Ok(ServerHash::SHA1(hash))
+            }
+        }
+        if let Some(hash) = &self.minecraft_hash {
+            Ok(ServerHash::MD5(hash))
+        }
+        None
+    }
+
+    /// Retrieves the hash portion of a provided url or None if its
+    /// not present.
+    pub fn get_hash_from_url(url: &str) -> Option<&str> {
+        let pattern =
+            Regex::new(r"https://(?:launcher|piston-data).mojang.com/v1/objects/([\\da-f]{40})/.*")
+                .ok()?;
+        let captures = pattern.captures(url)?;
+        let capture = captures.get(0)?;
+        Some(capture.as_str())
     }
 }
