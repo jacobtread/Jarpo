@@ -3,18 +3,14 @@ use crate::models::errors::{BuildToolsError, RepoError, SpigotError};
 use crate::models::versions::{SpigotVersion, VersionRefs};
 use crate::utils::constants::{PARODY_BUILD_TOOLS_VERSION, SPIGOT_VERSIONS_URL, USER_AGENT};
 use crate::utils::net::create_reqwest;
-use actix_web::web::to;
 use git2::{Error, ObjectType, Oid, Repository, ResetType};
-use log::{info, warn};
-use sha1::digest::FixedOutput;
-use sha1::Sha1;
+use log::{debug, info, warn};
 use sha1_smol::Sha1;
-use std::fmt::format;
 use std::fs::remove_dir;
-use std::fs::File as SyncFile;
 use std::io;
+use std::io::{copy, Read, Write};
 use std::path::{Path, PathBuf};
-use tokio::fs::{read, File};
+use tokio::fs::{create_dir, read, remove_file, write, File};
 use tokio::task::{spawn_blocking, JoinError, JoinHandle};
 use tokio::try_join;
 
@@ -124,9 +120,14 @@ async fn get_spigot_version(version: &str) -> Result<SpigotVersion, SpigotError>
     Ok(version)
 }
 
-pub async fn run_build_tools() -> Result<(), BuildToolsError> {
+pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
     let spigot_version = get_spigot_version(version).await?;
     let build_path = Path::new("build");
+
+    if !build_path.exists() {
+        create_dir(build_path).await?;
+    }
+
     setup_repositories(build_path, &spigot_version).await?;
     let build_info = get_build_info(build_path).await?;
 
@@ -141,12 +142,7 @@ pub async fn run_build_tools() -> Result<(), BuildToolsError> {
         }
     }
 
-    let jar_name = format!("server_{}.jar", info.minecraft_version);
-    let jar_path = path.join(&jar_name);
-
-    if !check_vanilla_jar(&jar_path, &build_info).await {
-        download_vanilla_jar(&jar_path, &build_info)
-    }
+    let _ = prepare_vanilla_jar(build_path, &build_info).await?;
 
     Ok(())
 }
@@ -168,7 +164,8 @@ pub async fn setup_repositories(
     let _ = try_join!(
         setup_repository(refs, Repo::BuildData, path.join("build_data")),
         setup_repository(refs, Repo::Bukkit, path.join("bukkit")),
-        setup_repository(refs, Repo::Spigot, path.join("spigot"))
+        setup_repository(refs, Repo::Spigot, path.join("spigot")),
+        setup_repository(refs, Repo::CraftBukkit, path.join("craftbukkit")),
     )?;
 
     Ok(())
@@ -185,13 +182,104 @@ pub async fn get_build_info(path: &Path) -> Result<BuildDataInfo, BuildToolsErro
     Ok(parsed)
 }
 
+/// Prepares the vanilla jar for decompiling and patching.
+/// - Checks the hashes of existing jars
+/// - Downloads jar if missing or different hash
+/// - Extracts the inner embedded jar if present
+/// - Returns the path for the vanilla jar (embedded or not)
+async fn prepare_vanilla_jar(
+    root: &Path,
+    info: &BuildDataInfo,
+) -> Result<PathBuf, BuildToolsError> {
+    let jar_name = format!("minecraft_server.{}.jar", info.minecraft_version);
+    let jar_path = root.join(&jar_name);
+    let jar_exists = jar_path.exists();
+
+    if !jar_exists || !check_vanilla_jar(&jar_path, info).await {
+        if jar_exists {
+            info!(
+                "Local hash for jar at \"{}\" didn't match. Re-downloading jar.",
+                jar_path.to_string_lossy()
+            );
+        }
+        download_vanilla_jar(&jar_path, info).await?
+    } else {
+        info!("Hashes match for downloaded jar.")
+    }
+
+    let embedded_path = {
+        let embedded_name = format!("embedded_server.{}.jar", info.minecraft_version);
+        root.join(embedded_name)
+    };
+
+    let embedded = extract_embedded(&jar_path, &embedded_path, info).await??;
+
+    if embedded {
+        info!("Extracted embedded server jar")
+    }
+
+    Ok(if embedded { embedded_path } else { jar_path })
+}
+
+/// Attempts to extract the embedded jar from `path` to `embedded_path` but will
+/// return whether or not one existed.
+fn extract_embedded(
+    path: &PathBuf,
+    embedded_path: &PathBuf,
+    info: &BuildDataInfo,
+) -> JoinHandle<Result<bool, BuildToolsError>> {
+    use std::fs::{read, write, File};
+
+    let file = File::open(path);
+    let embedded_path = embedded_path.clone();
+
+    let embedded_zip_path = format!(
+        "META-INF/versions/{0}/server-{0}.jar",
+        info.minecraft_version
+    );
+
+    let mut existing_hash: Option<String> = None;
+
+    if embedded_path.exists() && embedded_path.is_file() {
+        if let Some(mc_hash) = &info.minecraft_hash {
+            existing_hash = Some(mc_hash.clone());
+        }
+    }
+
+    spawn_blocking(move || {
+        if let Some(existing_hash) = existing_hash {
+            let existing = read(&embedded_path)?;
+            let hash = sha256::digest_bytes(&existing);
+
+            info!("Comparing hashes {}, {}", existing_hash, hash);
+
+            if hash.eq(&existing_hash) {
+                info!("Already extracted embedded jar with matching hash. Skipping.");
+                return Ok(true);
+            }
+        }
+
+        let file = file?;
+        let mut archive = zip::ZipArchive::new(file)?;
+        if let Ok(mut embedded) = archive.by_name(&embedded_zip_path) {
+            if embedded.is_file() {
+                let mut bytes = Vec::with_capacity(embedded.size() as usize);
+                embedded.read_to_end(&mut bytes)?;
+                write(&embedded_path, bytes)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
+}
+
 /// Checks whether the locally stored server jar hash matches the one
 /// that we are trying to build. If the hashes don't match or the jar
 /// simply doesn't exist then false is returned
-pub async fn check_vanilla_jar(path: &Path, info: &BuildDataInfo) -> bool {
+async fn check_vanilla_jar(path: &Path, info: &BuildDataInfo) -> bool {
     let info_hash = info.get_server_hash();
     if let Some(info_hash) = info_hash {
-        if !jar_path.exists() {
+        if !path.exists() {
             return false;
         }
         if let Ok(jar_bytes) = read(path).await {
@@ -215,13 +303,23 @@ pub async fn check_vanilla_jar(path: &Path, info: &BuildDataInfo) -> bool {
     }
 }
 
-pub async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) {}
+/// Downloads the vanilla server jar and stores it at
+/// the provided path
+async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) -> Result<(), BuildToolsError> {
+    let url = info.get_download_url();
+    let bytes = reqwest::get(url)
+        .await?
+        .bytes()
+        .await?;
+    write(path, bytes).await?;
+    Ok(())
+}
 
 #[cfg(test)]
 mod test {
     use crate::models::build_tools::BuildDataInfo;
     use crate::models::versions::SpigotVersion;
-    use crate::utils::build_tools::{setup_repositories, setup_repository, Repo};
+    use crate::utils::build_tools::{run_build_tools, setup_repositories, setup_repository, Repo};
     use crate::utils::constants::{SPIGOT_VERSIONS_URL, USER_AGENT};
     use crate::utils::net::create_reqwest;
     use env_logger::WriteStyle;
@@ -407,6 +505,15 @@ mod test {
             let package_mappings = mappings_path.join(pp);
             assert!(package_mappings.exists() && package_mappings.is_file());
         }
+    }
+
+    #[tokio::test]
+    async fn test_build_tools() {
+        dotenv::dotenv().ok();
+        env_logger::init();
+        run_build_tools("1.19.2")
+            .await
+            .unwrap();
     }
 }
 

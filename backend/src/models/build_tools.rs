@@ -1,4 +1,5 @@
 use crate::models::errors::BuildToolsError;
+use log::info;
 use regex::Regex;
 use serde::Deserialize;
 
@@ -62,16 +63,31 @@ pub enum ServerHash<'a> {
 }
 
 impl BuildDataInfo {
+    /// Finds the download url for the vanilla server jar based on whether
+    /// the server url exists or not.
+    pub fn get_download_url(&self) -> String {
+        if let Some(url) = &self.server_url {
+            url.clone()
+        } else {
+            format!(
+                "https://s3.amazonaws.com/Minecraft.Download/versions/{0}/minecraft_server.{0}.jar",
+                self.minecraft_version,
+            )
+        }
+    }
+
+    pub fn is_hash_match() {}
+
     /// Retrieves the server hash value o
     pub fn get_server_hash(&self) -> Option<ServerHash> {
         if let Some(server_url) = &self.server_url {
             let hash = Self::get_hash_from_url(server_url);
             if let Some(hash) = hash {
-                Ok(ServerHash::SHA1(hash))
+                return Some(ServerHash::SHA1(hash));
             }
         }
         if let Some(hash) = &self.minecraft_hash {
-            Ok(ServerHash::MD5(hash))
+            return Some(ServerHash::MD5(hash));
         }
         None
     }
@@ -80,10 +96,10 @@ impl BuildDataInfo {
     /// not present.
     pub fn get_hash_from_url(url: &str) -> Option<&str> {
         let pattern =
-            Regex::new(r"https://(?:launcher|piston-data).mojang.com/v1/objects/([\\da-f]{40})/.*")
+            Regex::new(r"https://(?:launcher|piston-data).mojang.com/v1/objects/([\da-f]{40})/.*")
                 .ok()?;
         let captures = pattern.captures(url)?;
-        let capture = captures.get(0)?;
+        let capture = captures.get(1)?;
         Some(capture.as_str())
     }
 }

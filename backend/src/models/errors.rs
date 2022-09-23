@@ -2,6 +2,7 @@ use actix_web::ResponseError;
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
 use tokio::task::JoinError;
+use zip::result::ZipError;
 
 #[derive(Debug)]
 pub enum VersionsError {
@@ -39,7 +40,10 @@ pub enum BuildToolsError {
     RepoError(RepoError),
     SpigotError(SpigotError),
     JoinError(JoinError),
+    RequestError(reqwest::Error),
     MissingBuildInfo,
+    BadServerJar(ZipError),
+    ParseError(serde_json::Error),
 }
 
 #[derive(Debug)]
@@ -53,10 +57,25 @@ impl From<reqwest::Error> for SpigotError {
         SpigotError::Request(err)
     }
 }
+impl From<reqwest::Error> for BuildToolsError {
+    fn from(err: reqwest::Error) -> Self {
+        BuildToolsError::RequestError(err)
+    }
+}
+impl From<serde_json::Error> for BuildToolsError {
+    fn from(err: serde_json::Error) -> Self {
+        BuildToolsError::ParseError(err)
+    }
+}
 
 impl From<JavaError> for BuildToolsError {
     fn from(err: JavaError) -> Self {
         BuildToolsError::JavaError(err)
+    }
+}
+impl From<ZipError> for BuildToolsError {
+    fn from(err: ZipError) -> Self {
+        BuildToolsError::BadServerJar(err)
     }
 }
 impl From<SpigotError> for BuildToolsError {
