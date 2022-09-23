@@ -1,5 +1,5 @@
 use actix_web::ResponseError;
-use std::fmt::{Debug, Display, Formatter, Write};
+use std::fmt::{Debug, Display, Formatter};
 use std::io;
 
 #[derive(Debug)]
@@ -35,6 +35,18 @@ impl From<io::Error> for VersionsError {
 pub enum BuildToolsError {
     IO(io::Error),
     JavaError(JavaError),
+}
+
+impl From<JavaError> for BuildToolsError {
+    fn from(err: JavaError) -> Self {
+        BuildToolsError::JavaError(err)
+    }
+}
+
+impl From<io::Error> for BuildToolsError {
+    fn from(err: io::Error) -> Self {
+        BuildToolsError::IO(err)
+    }
 }
 
 #[derive(Debug)]
