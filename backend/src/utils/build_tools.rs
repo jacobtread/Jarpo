@@ -1,8 +1,13 @@
-use crate::models::errors::RepoError;
-use crate::models::versions::VersionRefs;
+use crate::models::errors::{BuildToolsError, RepoError, SpigotError};
+use crate::models::versions::{SpigotVersion, VersionRefs};
+use crate::utils::constants::{SPIGOT_VERSIONS_URL, USER_AGENT};
+use crate::utils::net::create_reqwest;
 use git2::{Error, ObjectType, Oid, Repository, ResetType};
+use log::info;
 use std::fs::remove_dir;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use tokio::task::{spawn_blocking, JoinError, JoinHandle};
+use tokio::try_join;
 
 // Example version strings:
 // openjdk version "16.0.2" 2021-07-20
@@ -60,7 +65,7 @@ enum Repo {
 }
 
 impl Repo {
-    pub fn get_repo_url(&self) -> &str {
+    pub fn get_repo_url(&self) -> &'static str {
         match self {
             Repo::BuildData => "https://hub.spigotmc.org/stash/scm/spigot/builddata.git",
             Repo::Spigot => "https://hub.spigotmc.org/stash/scm/spigot/spigot.git",
@@ -81,18 +86,65 @@ impl Repo {
 
 /// Sets up the provided repo at the provided path resetting its commit to
 /// the reference obtained from the `version`
-fn setup_repository(refs: &VersionRefs, repo: Repo, path: &Path) -> Result<(), RepoError> {
+fn setup_repository(
+    refs: &VersionRefs,
+    repo: Repo,
+    path: PathBuf,
+) -> JoinHandle<Result<(), RepoError>> {
     let url = repo.get_repo_url();
-    let reference = repo.get_repo_ref(refs);
-    let repo = get_repository(url, path)?;
-    reset_to_commit(&repo, reference)
+    let reference = repo
+        .get_repo_ref(refs)
+        .to_string();
+    spawn_blocking(move || {
+        let repository = get_repository(url, &path)?;
+        reset_to_commit(&repository, &reference)
+    })
+}
+
+/// Retrieves a spigot version JSON from `SPIGOT_VERSION_URL` and parses it
+/// returning the result or a SpigotError
+async fn get_spigot_version(version: &str) -> Result<SpigotVersion, SpigotError> {
+    let client = create_reqwest()?;
+    let url = format!("{}{}.json", SPIGOT_VERSIONS_URL, version);
+    let version = client
+        .get(url)
+        .send()
+        .await?
+        .json::<SpigotVersion>()
+        .await?;
+    Ok(version)
+}
+
+/// Sets up the required repositories by downloading them and setting
+/// the correct commit ref this is done Asynchronously
+pub async fn setup_repositories(path: &Path, version: &str) -> Result<(), BuildToolsError> {
+    let spigot_version = get_spigot_version(version).await?;
+    let refs = &spigot_version.refs;
+
+    info!(
+        "Setting up repositories in \"{}\" (build_data, bukkit, spigot)",
+        path.to_string_lossy()
+    );
+
+    // Wait for all the repositories to download and reach the intended reference
+    let _ = try_join!(
+        setup_repository(refs, Repo::BuildData, path.join("build_data")),
+        setup_repository(refs, Repo::Bukkit, path.join("bukkit")),
+        setup_repository(refs, Repo::Spigot, path.join("spigot"))
+    )?;
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod test {
     use crate::models::build_tools::BuildDataInfo;
     use crate::models::versions::SpigotVersion;
-    use crate::utils::build_tools::{setup_repository, Repo};
+    use crate::utils::build_tools::{setup_repositories, setup_repository, Repo};
+    use crate::utils::constants::{SPIGOT_VERSIONS_URL, USER_AGENT};
+    use crate::utils::net::create_reqwest;
+    use env_logger::WriteStyle;
+    use log::LevelFilter;
     use regex::{Match, Regex};
     use std::fs::{create_dir, read, read_dir};
     use std::path::Path;
@@ -118,13 +170,15 @@ mod test {
     async fn scape_external_version() {
         // User agent is required to access the spigot versions
         // list so this is added here (or else error code: 1020)
-        let client = reqwest::Client::builder()
-            .user_agent("Jars/1.0.0")
-            .build()
+        let client = create_reqwest().unwrap();
+        let contents = client
+            .get(SPIGOT_VERSIONS_URL)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
             .unwrap();
-
-        let url = "https://hub.spigotmc.org/versions/";
-        let contents = client.get(url).send().await.unwrap().text().await.unwrap();
 
         let regex = Regex::new(r#"<a href="((\d(.)?)+).json">"#).unwrap();
 
@@ -158,9 +212,18 @@ mod test {
 
         for version in TEST_VERSIONS {
             let path = root_path.join(format!("{}.json", version));
-            let url = format!("https://hub.spigotmc.org/versions/{}.json", version);
-            let bytes = client.get(url).send().await.unwrap().bytes().await.unwrap();
-            write(path, bytes).await.unwrap();
+            let url = format!("{}{}.json", SPIGOT_VERSIONS_URL, version);
+            let bytes = client
+                .get(url)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
+            write(path, bytes)
+                .await
+                .unwrap();
         }
     }
 
@@ -183,31 +246,38 @@ mod test {
     /// Clones the required repositories for each version pulling the
     /// required reference commit for each different version in
     /// `TEST_VERSIONS`
-    #[test]
-    fn setup_repos() {
+    #[tokio::test]
+    async fn setup_repos() {
         for version in TEST_VERSIONS {
             let version_file = format!("test/spigot/{}.json", version);
             let version_file = Path::new(&version_file);
             let contents = read(version_file).unwrap();
             let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
 
+            let test_path = Path::new("test/build");
+
+            setup_repositories(test_path, version)
+                .await
+                .unwrap();
+
             let build_data = Path::new("test/build/build_data");
-
-            setup_repository(&parsed.refs, Repo::BuildData, build_data).unwrap();
-
             test_build_data(build_data, version);
-
-            setup_repository(&parsed.refs, Repo::Bukkit, &Path::new("test/build/bukkit")).unwrap();
-
-            setup_repository(
-                &parsed.refs,
-                Repo::CraftBukkit,
-                &Path::new("test/build/craftbukkit"),
-            )
-            .unwrap();
-
-            setup_repository(&parsed.refs, Repo::Spigot, &Path::new("test/build/spigot")).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn setup_first_repo() {
+        let version = TEST_VERSIONS[0];
+        let version_file = format!("test/spigot/{}.json", version);
+        let version_file = Path::new(&version_file);
+        let contents = read(version_file).unwrap();
+        let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
+        let test_path = Path::new("test/build");
+        setup_repositories(test_path, version)
+            .await
+            .unwrap();
+        let build_data = Path::new("test/build/build_data");
+        test_build_data(build_data, version);
     }
 
     /// Tests the build data cloned from the https://hub.spigotmc.org/stash/scm/spigot/builddata.git
