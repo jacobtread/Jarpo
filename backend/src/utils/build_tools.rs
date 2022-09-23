@@ -214,11 +214,26 @@ async fn prepare_vanilla_jar(
 
     let embedded = extract_embedded(&jar_path, &embedded_path, info).await??;
 
-    if embedded {
-        info!("Extracted embedded server jar")
-    }
+    let path = match embedded {
+        ExtractType::Cached => {
+            info!("Already extracted embedded jar with matching hash. Skipping.");
+            embedded_path
+        }
+        ExtractType::Done => {
+            info!("Extracted embedded server jar");
+            remove_embed_signature(root, &embedded_path);
+            embedded_path
+        }
+        _ => jar_path,
+    };
 
-    Ok(if embedded { embedded_path } else { jar_path })
+    Ok(path)
+}
+
+enum ExtractType {
+    Cached,
+    Done,
+    None,
 }
 
 /// Attempts to extract the embedded jar from `path` to `embedded_path` but will
@@ -227,7 +242,7 @@ fn extract_embedded(
     path: &PathBuf,
     embedded_path: &PathBuf,
     info: &BuildDataInfo,
-) -> JoinHandle<Result<bool, BuildToolsError>> {
+) -> JoinHandle<Result<ExtractType, BuildToolsError>> {
     use std::fs::{read, write, File};
 
     let file = File::open(path);
@@ -255,7 +270,7 @@ fn extract_embedded(
 
             if hash.eq(&existing_hash) {
                 info!("Already extracted embedded jar with matching hash. Skipping.");
-                return Ok(true);
+                return Ok(ExtractType::Cached);
             }
         }
 
@@ -266,12 +281,19 @@ fn extract_embedded(
                 let mut bytes = Vec::with_capacity(embedded.size() as usize);
                 embedded.read_to_end(&mut bytes)?;
                 write(&embedded_path, bytes)?;
-                return Ok(true);
+                return Ok(ExtractType::Done);
             }
         }
-        Ok(false)
+        Ok(ExtractType::None)
     })
 }
+
+/// Removes the MOJANGCS.RSA and MOJANGCS.SF from the jar file or
+/// else they wont function.
+///
+/// TODO: It might be possible to move this forward to the decompile
+/// TODO: step rather than doing it early on here.
+fn remove_embed_signature(_path: &Path, _jar_path: &PathBuf) {}
 
 /// Checks whether the locally stored server jar hash matches the one
 /// that we are trying to build. If the hashes don't match or the jar

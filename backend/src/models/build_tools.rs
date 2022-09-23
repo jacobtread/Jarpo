@@ -76,8 +76,6 @@ impl BuildDataInfo {
         }
     }
 
-    pub fn is_hash_match() {}
-
     /// Retrieves the server hash value o
     pub fn get_server_hash(&self) -> Option<ServerHash> {
         if let Some(server_url) = &self.server_url {
