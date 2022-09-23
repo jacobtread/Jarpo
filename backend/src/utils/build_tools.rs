@@ -280,6 +280,21 @@ mod test {
         test_build_data(build_data, version);
     }
 
+    #[tokio::test]
+    async fn setup_latest() {
+        let version = "latest";
+        let version_file = format!("test/spigot/{}.json", version);
+        let version_file = Path::new(&version_file);
+        let contents = read(version_file).unwrap();
+        let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
+        let test_path = Path::new("test/build");
+        setup_repositories(test_path, version)
+            .await
+            .unwrap();
+        let build_data = Path::new("test/build/build_data");
+        test_build_data(build_data, version);
+    }
+
     /// Tests the build data cloned from the https://hub.spigotmc.org/stash/scm/spigot/builddata.git
     /// repo and ensures that the information in the info.json is both parsable and correct.
     /// (i.e. No files are missing)
