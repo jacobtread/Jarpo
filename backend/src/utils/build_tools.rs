@@ -4,6 +4,7 @@ use crate::models::versions::{SpigotVersion, VersionRefs};
 use crate::utils::constants::{
     MAVEN_DOWNLOAD_URL, MAVEN_VERSION, PARODY_BUILD_TOOLS_VERSION, SPIGOT_VERSIONS_URL, USER_AGENT,
 };
+use crate::utils::git::setup_repositories;
 use crate::utils::net::create_reqwest;
 use git2::{Error, ObjectType, Oid, Repository, ResetType};
 use log::{debug, info, warn};
@@ -16,98 +17,6 @@ use tokio::fs::{create_dir, create_dir_all, read, remove_file, write, File};
 use tokio::io::AsyncWriteExt;
 use tokio::task::{spawn_blocking, JoinError, JoinHandle};
 use tokio::try_join;
-
-// Example version strings:
-// openjdk version "16.0.2" 2021-07-20
-// openjdk version "11.0.12" 2021-07-20
-// openjdk version "1.8.0_332"
-
-// #[derive(Debug, Clone, PartialEq, Eq)]
-// pub struct JavaVersion(pub String);
-//
-// pub async fn check_java_version() -> Result<JavaVersion, JavaError> {
-//     let mut command = Command::new("java");
-//     command.args(["-version"]);
-//     let output = command.output().await
-//         .map_err(|_| JavaError::MissingJava);
-//
-//
-// }
-
-/// Checks if the git repository exists locally on disk and opens it
-/// or clones it if it doesn't exist or is invalid.
-fn get_repository(url: &str, path: &Path) -> Result<Repository, RepoError> {
-    if path.exists() {
-        let git_path = path.join(".git");
-        let git_exists = git_path.exists();
-        if git_exists && git_path.is_dir() {
-            match Repository::open(path) {
-                Ok(repository) => return Ok(repository),
-                Err(_) => {
-                    remove_dir_all(path)?;
-                }
-            }
-        } else if git_exists {
-            remove_dir_all(path)?;
-        }
-    }
-    Ok(Repository::clone(url, path)?)
-}
-
-/// Reset the provided repository to the commit that the provided
-/// reference is for.
-fn reset_to_commit(repo: &Repository, reference: &str) -> Result<(), RepoError> {
-    let ref_id = Oid::from_str(reference)?;
-    let object = repo.find_object(ref_id, None)?;
-    let commit = object.peel(ObjectType::Commit)?;
-    repo.reset(&commit, ResetType::Hard, None)?;
-    Ok(())
-}
-
-#[derive(Debug)]
-enum Repo {
-    BuildData,
-    Spigot,
-    Bukkit,
-    CraftBukkit,
-}
-
-impl Repo {
-    pub fn get_repo_url(&self) -> &'static str {
-        match self {
-            Repo::BuildData => "https://hub.spigotmc.org/stash/scm/spigot/builddata.git",
-            Repo::Spigot => "https://hub.spigotmc.org/stash/scm/spigot/spigot.git",
-            Repo::Bukkit => "https://hub.spigotmc.org/stash/scm/spigot/bukkit.git",
-            Repo::CraftBukkit => "https://hub.spigotmc.org/stash/scm/spigot/craftbukkit.git",
-        }
-    }
-
-    pub fn get_repo_ref<'a>(&self, refs: &'a VersionRefs) -> &'a str {
-        match self {
-            Repo::BuildData => &refs.build_data,
-            Repo::Spigot => &refs.spigot,
-            Repo::Bukkit => &refs.bukkit,
-            Repo::CraftBukkit => &refs.craft_bukkit,
-        }
-    }
-}
-
-/// Sets up the provided repo at the provided path resetting its commit to
-/// the reference obtained from the `version`
-fn setup_repository(
-    refs: &VersionRefs,
-    repo: Repo,
-    path: PathBuf,
-) -> JoinHandle<Result<(), RepoError>> {
-    let url = repo.get_repo_url();
-    let reference = repo
-        .get_repo_ref(refs)
-        .to_string();
-    spawn_blocking(move || {
-        let repository = get_repository(url, &path)?;
-        reset_to_commit(&repository, &reference)
-    })
-}
 
 /// Downloads and unzips maven from the `MAVEN_DOWNLOAD_URL`
 async fn setup_maven(path: &Path) -> Result<PathBuf, BuildToolsError> {
@@ -221,29 +130,6 @@ pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
 
     // TODO: Remove jar signature. Possible to do later?
     remove_embed_signature(build_path, &jar_path);
-
-    Ok(())
-}
-
-/// Sets up the required repositories by downloading them and setting
-/// the correct commit ref this is done Asynchronously
-async fn setup_repositories(path: &Path, version: &SpigotVersion) -> Result<(), BuildToolsError> {
-    let refs = &version.refs;
-
-    info!(
-        "Setting up repositories in \"{}\" (build_data, bukkit, spigot)",
-        path.to_string_lossy()
-    );
-
-    // Wait for all the repositories to download and reach the intended reference
-    let _ = try_join!(
-        setup_repository(refs, Repo::BuildData, path.join("build_data")),
-        setup_repository(refs, Repo::Bukkit, path.join("bukkit")),
-        setup_repository(refs, Repo::Spigot, path.join("spigot")),
-        setup_repository(refs, Repo::CraftBukkit, path.join("craftbukkit")),
-    )?;
-
-    info!("Repositories successfully setup");
 
     Ok(())
 }
@@ -421,9 +307,9 @@ async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) -> Result<(), B
 mod test {
     use crate::models::build_tools::BuildDataInfo;
     use crate::models::versions::SpigotVersion;
-    use crate::utils::build_tools::{run_build_tools, setup_repositories, setup_repository, Repo};
     use crate::utils::constants::{SPIGOT_VERSIONS_URL, USER_AGENT};
     use crate::utils::net::create_reqwest;
+    use crate::utils::r#mod::{run_build_tools, setup_repositories};
     use env_logger::WriteStyle;
     use log::LevelFilter;
     use regex::{Match, Regex};
