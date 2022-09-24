@@ -227,10 +227,7 @@ pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
 
 /// Sets up the required repositories by downloading them and setting
 /// the correct commit ref this is done Asynchronously
-pub async fn setup_repositories(
-    path: &Path,
-    version: &SpigotVersion,
-) -> Result<(), BuildToolsError> {
+async fn setup_repositories(path: &Path, version: &SpigotVersion) -> Result<(), BuildToolsError> {
     let refs = &version.refs;
 
     info!(
@@ -252,7 +249,7 @@ pub async fn setup_repositories(
 }
 
 /// Loads the build_data info configuration
-pub async fn get_build_info(path: &Path) -> Result<BuildDataInfo, BuildToolsError> {
+async fn get_build_info(path: &Path) -> Result<BuildDataInfo, BuildToolsError> {
     let info_path = path.join("build_data/info.json");
     if !info_path.exists() {
         return Err(BuildToolsError::MissingBuildInfo);
