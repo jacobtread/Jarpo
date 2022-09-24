@@ -1,6 +1,7 @@
 use actix_web::ResponseError;
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
+use std::path::PathBuf;
 use tokio::task::JoinError;
 use zip::result::ZipError;
 
@@ -44,6 +45,7 @@ pub enum BuildToolsError {
     MissingBuildInfo,
     BadServerJar(ZipError),
     ParseError(serde_json::Error),
+    MissingFile(PathBuf),
 }
 
 #[derive(Debug)]
