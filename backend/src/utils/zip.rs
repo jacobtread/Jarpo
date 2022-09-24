@@ -1,5 +1,4 @@
 use crate::define_from_value;
-use crate::models::errors::BuildToolsError;
 use std::fs::File;
 use std::fs::{create_dir_all, remove_dir_all, remove_file};
 use std::io;

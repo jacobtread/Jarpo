@@ -1,11 +1,11 @@
 {
-	"name": "3590",
-	"description": "Jenkins build 3590",
+	"name": "3593",
+	"description": "Jenkins build 3593",
 	"refs": {
 		"BuildData": "d96ad8e1e64b7c35bb632339c23621353be1f028",
-		"Bukkit": "acdb55f9a97c6b361947405717eb710b0200e165",
-		"CraftBukkit": "08cdd26ca9c8fbae22ffa03f79ecc564f015e260",
-		"Spigot": "4c157bb49aa5705967b066e9c2dec5520f720b22"
+		"Bukkit": "c7c11188610b4b0a59d090b06cabdc239337dcb8",
+		"CraftBukkit": "c2c39089eb639479327acb2c9f58bdfb69bc6b81",
+		"Spigot": "4aa5ead2377692b934a84b6853d188e2d9cbd53a"
 	},
 	"toolsVersion": 148,
 	"javaVersions": [61, 63]

@@ -1,12 +1,28 @@
-use crate::models::errors::{BuildToolsError, RepoError};
-use crate::models::versions::{SpigotVersion, VersionRefs};
-use git2::{Error, ObjectType, Oid, Repository, ResetType};
+use crate::build_tools::spigot::{SpigotVersion, VersionRefs};
+use crate::define_from_value;
+use git2::{ObjectType, Oid, Repository, ResetType};
 use log::info;
 use std::fmt::{Display, Formatter, Write};
 use std::fs::remove_dir_all;
+use std::io;
 use std::path::{Path, PathBuf};
-use tokio::task::{spawn_blocking, JoinHandle};
+use tokio::task::{spawn_blocking, JoinError, JoinHandle};
 use tokio::try_join;
+
+#[derive(Debug)]
+pub enum RepoError {
+    GitError(git2::Error),
+    IO(io::Error),
+    JoinError(JoinError),
+}
+
+define_from_value! {
+    RepoError {
+        GitError = git2::Error,
+        IO = io::Error,
+        JoinError = JoinError,
+    }
+}
 
 /// Enum representing the different know repositories that
 /// can be cloned. Each repositories is able to extract a

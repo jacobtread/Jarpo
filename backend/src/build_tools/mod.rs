@@ -1,18 +1,14 @@
 use crate::build_tools::maven::MavenError;
+use crate::build_tools::spigot::SpigotError;
 use crate::define_from_value;
 use crate::models::build_tools::BuildDataInfo;
-use crate::models::errors::{RepoError, SpigotError};
-use crate::models::versions::{SpigotVersion, VersionRefs};
 use crate::utils::constants::{
     MAVEN_DOWNLOAD_URL, MAVEN_VERSION, PARODY_BUILD_TOOLS_VERSION, SPIGOT_VERSIONS_URL, USER_AGENT,
 };
-use crate::utils::git::setup_repositories;
+use crate::utils::git::{setup_repositories, RepoError};
 use crate::utils::hash::HashType;
-use crate::utils::net::create_reqwest;
 use futures::future::TryFutureExt;
-use git2::{Error, ObjectType, Oid, Repository, ResetType};
-use log::{debug, info, warn};
-use sha1_smol::Sha1;
+use log::{info, warn};
 use std::fs::{remove_dir, remove_dir_all};
 use std::io;
 use std::io::{copy, Cursor, Read, Write};
@@ -25,6 +21,7 @@ use zip::result::ZipError;
 
 mod mapping;
 mod maven;
+pub(crate) mod spigot;
 
 #[derive(Debug)]
 pub enum BuildToolsError {
@@ -53,22 +50,8 @@ define_from_value! {
     }
 }
 
-/// Retrieves a spigot version JSON from `SPIGOT_VERSION_URL` and parses it
-/// returning the result or a SpigotError
-async fn get_spigot_version(version: &str) -> Result<SpigotVersion, SpigotError> {
-    let client = create_reqwest()?;
-    let url = format!("{}{}.json", SPIGOT_VERSIONS_URL, version);
-    let version = client
-        .get(url)
-        .send()
-        .await?
-        .json::<SpigotVersion>()
-        .await?;
-    Ok(version)
-}
-
 pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
-    let spigot_version = get_spigot_version(version).await?;
+    let spigot_version = spigot::get_version(version).await?;
     let build_path = Path::new("build");
 
     if !build_path.exists() {
@@ -265,7 +248,6 @@ async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) -> Result<(), B
 mod test {
     use crate::build_tools::run_build_tools;
     use crate::models::build_tools::BuildDataInfo;
-    use crate::models::versions::SpigotVersion;
     use crate::utils::constants::{SPIGOT_VERSIONS_URL, USER_AGENT};
     use crate::utils::git::setup_repositories;
     use crate::utils::net::create_reqwest;
@@ -281,145 +263,73 @@ mod test {
         "latest",
     ];
 
-    /// Scrapes the versions externally listed on the index of
-    /// https://hub.spigotmc.org/versions/ printing the output
-    ///
-    /// TODO: Possibly use this as a version list selection?
-    /// TODO: or check for checking that spigot has said
-    /// TODO: version that is wanting to be downloaded.
-    ///
-    /// NOTE: Some versions are in the normal format (e.g. 1.8, 1.9)
-    /// others are in a different format (e.g. 1023, 1021) when looking
-    /// in the 1.8.json, 1.9.json files you will see that the name is in
-    /// the 1023, 1021 format which are identical files to the other one.
-    #[tokio::test]
-    async fn scape_external_version() {
-        // User agent is required to access the spigot versions
-        // list so this is added here (or else error code: 1020)
-        let client = create_reqwest().unwrap();
-        let contents = client
-            .get(SPIGOT_VERSIONS_URL)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-
-        let regex = Regex::new(r#"<a href="((\d(.)?)+).json">"#).unwrap();
-
-        let values: Vec<&str> = regex
-            .captures_iter(&contents)
-            .map(|m| m.get(1))
-            .filter_map(|m| m)
-            .map(|m| m.as_str())
-            .collect();
-
-        println!("{:?}", values);
-    }
-
-    /// Downloads all the spigot build tools configuration files for the
-    /// versions listed at `TEST_VERSIONS` and saves them locally at
-    /// test/spigot/{VERSION}.json
-    #[tokio::test]
-    async fn get_external_versions() {
-        // User agent is required to access the spigot versions
-        // list so this is added here (or else error code: 1020)
-        let client = reqwest::Client::builder()
-            .user_agent("Jars/1.0.0")
-            .build()
-            .unwrap();
-
-        let root_path = Path::new("test/spigot");
-
-        if !root_path.exists() {
-            create_dir(root_path).unwrap()
-        }
-
-        for version in TEST_VERSIONS {
-            let path = root_path.join(format!("{}.json", version));
-            let url = format!("{}{}.json", SPIGOT_VERSIONS_URL, version);
-            let bytes = client
-                .get(url)
-                .send()
-                .await
-                .unwrap()
-                .bytes()
-                .await
-                .unwrap();
-            write(path, bytes)
-                .await
-                .unwrap();
-        }
-    }
-
     /// Checks all the JSON files in test/spigot (Only those present in
     /// `TEST_VERSIONS`) to ensure that they are all able to be parsed
     /// without any issues
-    #[test]
-    fn test_versions() {
-        let root_path = Path::new("test/spigot");
-        assert!(root_path.exists());
-        for version in TEST_VERSIONS {
-            let path = root_path.join(format!("{}.json", version));
-            assert!(path.exists() && path.is_file());
-            let contents = read(path).unwrap();
-            let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
-            println!("{:?}", parsed)
-        }
-    }
+    // #[test]
+    // fn test_versions() {
+    //     let root_path = Path::new("test/spigot");
+    //     assert!(root_path.exists());
+    //     for version in TEST_VERSIONS {
+    //         let path = root_path.join(format!("{}.json", version));
+    //         assert!(path.exists() && path.is_file());
+    //         let contents = read(path).unwrap();
+    //         let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
+    //         println!("{:?}", parsed)
+    //     }
+    // }
 
     /// Clones the required repositories for each version pulling the
     /// required reference commit for each different version in
     /// `TEST_VERSIONS`
-    #[tokio::test]
-    async fn setup_repos() {
-        for version in TEST_VERSIONS {
-            let version_file = format!("test/spigot/{}.json", version);
-            let version_file = Path::new(&version_file);
-            let contents = read(version_file).unwrap();
-            let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
-
-            let test_path = Path::new("test/build");
-
-            setup_repositories(test_path, &parsed)
-                .await
-                .unwrap();
-
-            let build_data = Path::new("test/build/build_data");
-            test_build_data(build_data, version);
-        }
-    }
-
-    #[tokio::test]
-    async fn setup_first_repo() {
-        let version = TEST_VERSIONS[0];
-        let version_file = format!("test/spigot/{}.json", version);
-        let version_file = Path::new(&version_file);
-        let contents = read(version_file).unwrap();
-        let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
-        let test_path = Path::new("test/build");
-        setup_repositories(test_path, &parsed)
-            .await
-            .unwrap();
-        let build_data = Path::new("test/build/build_data");
-        test_build_data(build_data, version);
-    }
-
-    #[tokio::test]
-    async fn setup_latest() {
-        let version = "latest";
-        let version_file = format!("test/spigot/{}.json", version);
-        let version_file = Path::new(&version_file);
-        let contents = read(version_file).unwrap();
-        let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
-        let test_path = Path::new("test/build");
-        setup_repositories(test_path, &parsed)
-            .await
-            .unwrap();
-        let build_data = Path::new("test/build/build_data");
-        test_build_data(build_data, version);
-    }
+    // #[tokio::test]
+    // async fn setup_repos() {
+    //     for version in TEST_VERSIONS {
+    //         let version_file = format!("test/spigot/{}.json", version);
+    //         let version_file = Path::new(&version_file);
+    //         let contents = read(version_file).unwrap();
+    //         let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
+    //
+    //         let test_path = Path::new("test/build");
+    //
+    //         setup_repositories(test_path, &parsed)
+    //             .await
+    //             .unwrap();
+    //
+    //         let build_data = Path::new("test/build/build_data");
+    //         test_build_data(build_data, version);
+    //     }
+    // }
+    //
+    // #[tokio::test]
+    // async fn setup_first_repo() {
+    //     let version = TEST_VERSIONS[0];
+    //     let version_file = format!("test/spigot/{}.json", version);
+    //     let version_file = Path::new(&version_file);
+    //     let contents = read(version_file).unwrap();
+    //     let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
+    //     let test_path = Path::new("test/build");
+    //     setup_repositories(test_path, &parsed)
+    //         .await
+    //         .unwrap();
+    //     let build_data = Path::new("test/build/build_data");
+    //     test_build_data(build_data, version);
+    // }
+    //
+    // #[tokio::test]
+    // async fn setup_latest() {
+    //     let version = "latest";
+    //     let version_file = format!("test/spigot/{}.json", version);
+    //     let version_file = Path::new(&version_file);
+    //     let contents = read(version_file).unwrap();
+    //     let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
+    //     let test_path = Path::new("test/build");
+    //     setup_repositories(test_path, &parsed)
+    //         .await
+    //         .unwrap();
+    //     let build_data = Path::new("test/build/build_data");
+    //     test_build_data(build_data, version);
+    // }
 
     /// Tests the build data cloned from the https://hub.spigotmc.org/stash/scm/spigot/builddata.git
     /// repo and ensures that the information in the info.json is both parsable and correct.
