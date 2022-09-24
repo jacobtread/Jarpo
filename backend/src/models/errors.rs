@@ -1,3 +1,4 @@
+use crate::define_from_value;
 use actix_web::ResponseError;
 use std::fmt::{Debug, Display, Formatter};
 use std::io;
@@ -108,22 +109,19 @@ pub enum JavaError {
 pub enum RepoError {
     GitError(git2::Error),
     IO(io::Error),
+    JoinError(JoinError),
+}
+
+define_from_value! {
+    RepoError {
+        GitError = git2::Error,
+        IO = io::Error,
+        JoinError = JoinError,
+    }
 }
 
 impl From<JoinError> for BuildToolsError {
     fn from(err: JoinError) -> Self {
         BuildToolsError::JoinError(err)
-    }
-}
-
-impl From<io::Error> for RepoError {
-    fn from(err: io::Error) -> Self {
-        RepoError::IO(err)
-    }
-}
-
-impl From<git2::Error> for RepoError {
-    fn from(err: git2::Error) -> Self {
-        RepoError::GitError(err)
     }
 }

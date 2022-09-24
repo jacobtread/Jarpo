@@ -103,10 +103,7 @@ impl Repo {
 
 /// Sets up the required repositories by downloading them and setting
 /// the correct commit ref this is done Asynchronously
-pub async fn setup_repositories(
-    path: &Path,
-    version: &SpigotVersion,
-) -> Result<(), BuildToolsError> {
+pub async fn setup_repositories(path: &Path, version: &SpigotVersion) -> Result<(), RepoError> {
     let refs = &version.refs;
     info!(
         "Setting up repositories in \"{}\" (build_data, bukkit, spigot)",

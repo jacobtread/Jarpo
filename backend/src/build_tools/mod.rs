@@ -1,11 +1,15 @@
-use crate::models::build_tools::{BuildDataInfo, ServerHash};
-use crate::models::errors::{BuildToolsError, RepoError, SpigotError};
+use crate::build_tools::maven::MavenError;
+use crate::define_from_value;
+use crate::models::build_tools::BuildDataInfo;
+use crate::models::errors::{RepoError, SpigotError};
 use crate::models::versions::{SpigotVersion, VersionRefs};
 use crate::utils::constants::{
     MAVEN_DOWNLOAD_URL, MAVEN_VERSION, PARODY_BUILD_TOOLS_VERSION, SPIGOT_VERSIONS_URL, USER_AGENT,
 };
 use crate::utils::git::setup_repositories;
+use crate::utils::hash::HashType;
 use crate::utils::net::create_reqwest;
+use futures::future::TryFutureExt;
 use git2::{Error, ObjectType, Oid, Repository, ResetType};
 use log::{debug, info, warn};
 use sha1_smol::Sha1;
@@ -17,72 +21,36 @@ use tokio::fs::{create_dir, create_dir_all, read, remove_file, write, File};
 use tokio::io::AsyncWriteExt;
 use tokio::task::{spawn_blocking, JoinError, JoinHandle};
 use tokio::try_join;
+use zip::result::ZipError;
 
-/// Downloads and unzips maven from the `MAVEN_DOWNLOAD_URL`
-async fn setup_maven(path: &Path) -> Result<PathBuf, BuildToolsError> {
-    let maven_path_name = format!("{}-bin.zip", MAVEN_VERSION);
-    let maven_path = path.join(&maven_path_name);
+mod mapping;
+mod maven;
 
-    let url = format!("{}{}", MAVEN_DOWNLOAD_URL, &maven_path_name);
-    info!("Downloading maven from: {}", url);
-    {
-        let client = create_reqwest()?;
-        let bytes = client
-            .get(url)
-            .send()
-            .await?
-            .bytes()
-            .await?;
-        let mut file = File::create(&maven_path).await?;
-        file.write_all(bytes.as_ref())
-            .await?;
-        info!("Downloaded maven install.");
-    }
-    info!("Unzipping maven install");
-    unzip(&maven_path, path.to_path_buf()).await??;
-    if maven_path.exists() {
-        debug!("Deleting downloaded maven install zip");
-        remove_file(&maven_path).await?;
-    }
-    Ok(maven_path)
+#[derive(Debug)]
+pub enum BuildToolsError {
+    IO(io::Error),
+    Repo(RepoError),
+    Spigot(SpigotError),
+    Maven(MavenError),
+    MissingBuildInfo,
+    Parse(serde_json::Error),
+    MissingFile(PathBuf),
+    Request(reqwest::Error),
+    Join(JoinError),
+    Zip(ZipError),
 }
 
-/// Unzips the provided zip file to the provided output directory. This is
-/// wrapped in a async spawn blocking.
-fn unzip(target: &PathBuf, output: PathBuf) -> JoinHandle<Result<(), BuildToolsError>> {
-    use std::fs::{copy, create_dir_all, remove_dir_all, File};
-    let target = target.to_owned();
-    spawn_blocking(move || {
-        let output = &output;
-        if !target.exists() {
-            return Err(BuildToolsError::MissingFile(target));
-        }
-
-        let file = File::open(target)?;
-        let mut archive = zip::ZipArchive::new(file)?;
-
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)?;
-            let out_path = match file.enclosed_name() {
-                None => continue,
-                Some(path) => path.to_owned(),
-            };
-            let out_path = output.join(out_path);
-            if file.name().ends_with('/') {
-                create_dir_all(out_path)?;
-            } else {
-                if let Some(p) = out_path.parent() {
-                    if !p.exists() {
-                        create_dir_all(p)?;
-                    }
-                }
-                let mut out_file = File::create(&out_path)?;
-                io::copy(&mut file, &mut out_file)?;
-            }
-        }
-
-        Ok(())
-    })
+define_from_value! {
+    BuildToolsError {
+        IO = io::Error,
+        Repo = RepoError,
+        Spigot = SpigotError,
+        Maven = MavenError,
+        Parse = serde_json::Error,
+        Request = reqwest::Error,
+        Join = JoinError,
+        Zip = ZipError,
+    }
 }
 
 /// Retrieves a spigot version JSON from `SPIGOT_VERSION_URL` and parses it
@@ -107,10 +75,11 @@ pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
         create_dir(build_path).await?;
     }
 
-    let (_, maven_path) = try_join!(
-        setup_repositories(build_path, &spigot_version),
-        setup_maven(build_path)
-    )?;
+    let setup_future =
+        setup_repositories(build_path, &spigot_version).map_err(|err| BuildToolsError::Repo(err));
+    let maven_future = maven::setup(build_path).map_err(|err| BuildToolsError::Maven(err));
+
+    let (_, maven_path) = try_join!(setup_future, maven_future)?;
 
     let build_info = get_build_info(build_path).await?;
 
@@ -177,7 +146,7 @@ async fn prepare_vanilla_jar(
         root.join(embedded_name)
     };
 
-    let embedded = extract_embedded(&jar_path, &embedded_path, info).await??;
+    let embedded = extract_embedded(&jar_path, &embedded_path, info).await?;
 
     let path = match embedded {
         ExtractType::Cached => {
@@ -207,11 +176,11 @@ enum ExtractType {
 
 /// Attempts to extract the embedded jar from `path` to `embedded_path` but will
 /// return whether or not one existed.
-fn extract_embedded(
+async fn extract_embedded(
     path: &PathBuf,
     embedded_path: &PathBuf,
     info: &BuildDataInfo,
-) -> JoinHandle<Result<ExtractType, BuildToolsError>> {
+) -> Result<ExtractType, BuildToolsError> {
     use std::fs::{read, write, File};
 
     let file = File::open(path);
@@ -233,8 +202,7 @@ fn extract_embedded(
     spawn_blocking(move || {
         if let Some(existing_hash) = existing_hash {
             let existing = read(&embedded_path)?;
-            let hash = sha256::digest_bytes(&existing);
-            if hash.eq(&existing_hash) {
+            if HashType::SHA256.is_match(&existing_hash, existing) {
                 info!("Already extracted embedded jar with matching hash. Skipping.");
                 return Ok(ExtractType::Cached);
             }
@@ -252,6 +220,7 @@ fn extract_embedded(
         }
         Ok(ExtractType::None)
     })
+    .await?
 }
 
 /// Removes the MOJANGCS.RSA and MOJANGCS.SF from the jar file or
@@ -265,24 +234,13 @@ fn remove_embed_signature(_path: &Path, _jar_path: &PathBuf) {}
 /// that we are trying to build. If the hashes don't match or the jar
 /// simply doesn't exist then false is returned
 async fn check_vanilla_jar(path: &Path, info: &BuildDataInfo) -> bool {
-    let info_hash = info.get_server_hash();
-    if let Some(info_hash) = info_hash {
+    if let Some((hash_type, hash)) = info.get_server_hash() {
         if !path.exists() {
             return false;
         }
+
         if let Ok(jar_bytes) = read(path).await {
-            match info_hash {
-                ServerHash::SHA1(hash) => {
-                    let mut hasher = Sha1::from(jar_bytes);
-                    let result = hasher.digest().to_string();
-                    result.eq(hash)
-                }
-                ServerHash::MD5(hash) => {
-                    let result = md5::compute(jar_bytes);
-                    let result_hash = format!("{:x}", result);
-                    result_hash.eq(hash)
-                }
-            }
+            hash_type.is_match(hash, jar_bytes)
         } else {
             false
         }
@@ -305,11 +263,12 @@ async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) -> Result<(), B
 
 #[cfg(test)]
 mod test {
+    use crate::build_tools::run_build_tools;
     use crate::models::build_tools::BuildDataInfo;
     use crate::models::versions::SpigotVersion;
     use crate::utils::constants::{SPIGOT_VERSIONS_URL, USER_AGENT};
+    use crate::utils::git::setup_repositories;
     use crate::utils::net::create_reqwest;
-    use crate::utils::r#mod::{run_build_tools, setup_repositories};
     use env_logger::WriteStyle;
     use log::LevelFilter;
     use regex::{Match, Regex};

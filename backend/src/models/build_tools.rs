@@ -1,4 +1,5 @@
 use crate::models::errors::BuildToolsError;
+use crate::utils::hash::HashType;
 use log::info;
 use regex::Regex;
 use serde::Deserialize;
@@ -57,11 +58,6 @@ impl Default for BuildDataInfo {
     }
 }
 
-pub enum ServerHash<'a> {
-    SHA1(&'a str),
-    MD5(&'a str),
-}
-
 impl BuildDataInfo {
     /// Finds the download url for the vanilla server jar based on whether
     /// the server url exists or not.
@@ -77,15 +73,15 @@ impl BuildDataInfo {
     }
 
     /// Retrieves the server hash value o
-    pub fn get_server_hash(&self) -> Option<ServerHash> {
+    pub fn get_server_hash(&self) -> Option<(HashType, &str)> {
         if let Some(server_url) = &self.server_url {
             let hash = Self::get_hash_from_url(server_url);
             if let Some(hash) = hash {
-                return Some(ServerHash::SHA1(hash));
+                return Some((HashType::SHA1, hash));
             }
         }
         if let Some(hash) = &self.minecraft_hash {
-            return Some(ServerHash::MD5(hash));
+            return Some((HashType::MD5, hash));
         }
         None
     }
