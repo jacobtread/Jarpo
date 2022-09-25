@@ -27,6 +27,13 @@ define_from_value! {
 pub async fn setup(path: &Path) -> Result<PathBuf, MavenError> {
     let maven_path_name = format!("{}-bin.zip", MAVEN_VERSION);
     let maven_path = path.join(&maven_path_name);
+
+    let extracted_path = path.join(MAVEN_VERSION);
+    if extracted_path.exists() && extracted_path.is_dir() {
+        info!("Maven already downloaded.. Skipping..");
+        return Ok(extracted_path);
+    }
+
     let url = format!("{}{}", MAVEN_DOWNLOAD_URL, &maven_path_name);
 
     {
