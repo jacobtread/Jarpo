@@ -368,7 +368,7 @@ mod test {
     async fn test_build_tools() {
         dotenv::dotenv().ok();
         env_logger::init();
-        run_build_tools("1.19.2")
+        run_build_tools("1.18")
             .await
             .unwrap();
     }
