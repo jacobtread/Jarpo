@@ -22,9 +22,9 @@ pub struct Mapper<'a> {
     obf_2_bukkit: CowMapping<'a>,
 
     /// The Bukkit -> Obfuscated mappings these are all string
-    /// slices and aren't used in the same function as the
-    /// mojang mappings so they are a normal HashMap
-    bukkit_2_obf: HashMap<&'a str, &'a str>,
+    /// slices from the provided bukkit string. CowMapping used
+    /// to generalize the type.
+    bukkit_2_obf: CowMapping<'a>,
 }
 
 /// Represents a parsed item from a mojang mappings file
@@ -48,14 +48,14 @@ impl<'a> Mapper<'a> {
     pub fn new(bukkit: &'a str) -> Self {
         let mut bukkit_comments = Vec::new();
         let mut obf_2_bukkit = CowMapping::new();
-        let mut bukkit_2_obf = HashMap::new();
+        let mut bukkit_2_obf = CowMapping::new();
         for line in bukkit.lines() {
             if line.starts_with('#') {
                 bukkit_comments.push(line);
             } else {
                 if let Some((obf_name, bukkit_name)) = Self::try_parse_bukkit(line) {
                     obf_2_bukkit.insert_borrowed(obf_name, bukkit_name);
-                    bukkit_2_obf.insert(bukkit_name, obf_name);
+                    bukkit_2_obf.insert_borrowed(bukkit_name, obf_name);
                 }
             }
         }
@@ -269,6 +269,50 @@ impl<'a> Mapper<'a> {
         }
     }
 
+    fn get_obf_type<'b>(&self, value: &'b str, out: &mut String) -> &'b str {
+        return match value {
+            "B" | "C" | "D" | "F" | "I" | "J" | "S" | "Z" | "V" => {
+                out.push_str(value);
+                &value[1..]
+            }
+            value => {
+                if value.starts_with('[') {
+                    out.push('[');
+                    self.get_obf_type(&value[1..], out)
+                } else {
+                    let end_index = value.find(';').unwrap_or(1);
+                    let ty = &value[1..end_index];
+                    out.push('L');
+                    if let Some(mapping) = self.obf_2_bukkit.get(ty) {
+                        out.push_str(mapping);
+                    } else {
+                        out.push_str(ty);
+                    }
+                    out.push(';');
+                    &value[ty.len() + 2..]
+                }
+            }
+        };
+    }
+
+    fn convert_obf_type(&self, desc: &str) -> String {
+        let mut desc = &desc[1..];
+        let mut out = String::new();
+        out.push('(');
+        if desc.starts_with(')') {
+            desc = &desc[1..];
+            out.push(')');
+        }
+        while desc.len() > 0 {
+            desc = self.get_obf_type(desc, &mut out);
+            if desc.len() > 0 && desc.starts_with(')') {
+                desc = &desc[1..];
+                out.push(')');
+            }
+        }
+        out
+    }
+
     pub fn make_csrg<'b>(&mut self, mojang: &'b str, members: bool) -> String {
         let mut mojang_mappings = CowMapping::new();
         if members {
@@ -326,6 +370,47 @@ impl<'a> Mapper<'a> {
         out.sort();
         out.join("\n")
     }
+
+    pub fn make_combined<'b>(&mut self, a: &'b str) -> String {
+        let mut combined = Vec::new();
+
+        for (key, value) in self.obf_2_bukkit.iter() {
+            combined.push(format!("{key} {value}"))
+        }
+
+        for line in a.lines() {
+            if line.starts_with('#') {
+                continue;
+            }
+
+            let line = line.trim();
+            let parts = line
+                .split_whitespace()
+                .collect::<Vec<&str>>();
+
+            if parts.len() == 3 {
+                let class = parts[0];
+                let original = parts[1];
+                let targ = parts[2];
+
+                let obf_name = Self::mapped_value(class, &self.bukkit_2_obf)
+                    .unwrap_or_else(|| String::from("null"));
+
+                combined.push(format!("{obf_name} {original} {targ}"))
+            } else if parts.len() == 4 {
+                let class = parts[0];
+                let original = parts[1];
+                let desc = parts[2];
+                let targ = parts[3];
+                let obf_name = Self::mapped_value(class, &self.bukkit_2_obf)
+                    .unwrap_or_else(|| String::from("null"));
+                let obf_desc = self.convert_obf_type(desc);
+
+                combined.push(format!("{obf_name} {original} {obf_desc} {targ}"))
+            }
+        }
+        combined.join("\n")
+    }
 }
 
 #[cfg(test)]
@@ -335,7 +420,7 @@ mod test {
     use std::path::Path;
 
     #[test]
-    fn test() {
+    fn make_csrg() {
         dotenv::dotenv().ok();
         env_logger::init();
 
@@ -351,6 +436,24 @@ mod test {
         let mut mapper = Mapper::new(bukkit.as_ref());
         let out = mapper.make_csrg(mojang.as_ref(), true);
         let out_path = Path::new("test/build/output.csrg");
+        write(out_path, out).unwrap();
+    }
+
+    #[test]
+    fn make_combined() {
+        dotenv::dotenv().ok();
+        env_logger::init();
+        let bukkit_path = Path::new("test/build/bukkit-1.18-cl.csrg");
+        let bukkit = read(bukkit_path).unwrap();
+        let bukkit = String::from_utf8_lossy(&bukkit);
+
+        let in_path = Path::new("test/build/output.csrg");
+        let in_bytes = read(in_path).unwrap();
+        let in_text = String::from_utf8_lossy(&in_bytes);
+
+        let mut mapper = Mapper::new(bukkit.as_ref());
+        let out = mapper.make_combined(in_text.as_ref());
+        let out_path = Path::new("test/build/output-combined.csrg");
         write(out_path, out).unwrap();
     }
 }
