@@ -1,6 +1,6 @@
 use crate::build_tools::spigot::{SpigotVersion, VersionRefs};
 use crate::define_from_value;
-use git2::{ObjectType, Oid, Repository, ResetType};
+use git2::{Object, ObjectType, Oid, Repository, ResetType};
 use log::info;
 use std::fmt::{Display, Formatter, Write};
 use std::fs::remove_dir_all;
@@ -14,6 +14,8 @@ pub enum RepoError {
     GitError(git2::Error),
     IO(io::Error),
     JoinError(JoinError),
+    ExpectedCommit,
+    MappingsRef,
 }
 
 define_from_value! {
@@ -94,26 +96,65 @@ impl Repo {
     /// `reference` reffers to.
     fn reset_to_commit(repo: &Repository, reference: &str) -> Result<(), RepoError> {
         let ref_id = Oid::from_str(reference)?;
-        let object = repo.find_object(ref_id, None)?;
+        let object = repo.find_object(ref_id, Some(ObjectType::Commit))?;
         let commit = object.peel(ObjectType::Commit)?;
         repo.reset(&commit, ResetType::Hard, None)?;
         Ok(())
     }
 
+    /// Does a revwalk on the repository and searches each commit
+    /// returning the SHA1 id of the commit found
+    fn get_mappings_reference(repo: &Repository) -> Result<String, RepoError> {
+        let mut rev_walk = repo.revwalk()?;
+        rev_walk.push_head()?;
+        let mut count = 0;
+        loop {
+            if count > 20 {
+                break;
+            }
+            count += 1;
+            let id = match rev_walk.next() {
+                Some(id) => id?,
+                None => break,
+            };
+            let object = repo.find_object(id, Some(ObjectType::Commit))?;
+            let commit = object
+                .as_commit()
+                .ok_or(RepoError::ExpectedCommit)?;
+            let changed_mappings = commit
+                .tree()?
+                .iter()
+                .any(|value| {
+                    if let Some(name) = value.name() {
+                        name.eq("mappings")
+                    } else {
+                        false
+                    }
+                });
+            if changed_mappings {
+                let commit_id = commit.id();
+                let commit_hash = format!("{commit_id}");
+                return Ok(commit_hash);
+            }
+        }
+        Err(RepoError::MappingsRef)
+    }
+
     /// Sets up this repository by cloning / loading the
     /// repository and resetting to the commit referenced
     /// in `refs`
-    pub async fn setup(self, refs: &VersionRefs, path: PathBuf) -> Result<(), RepoError> {
+    pub async fn setup(self, refs: &VersionRefs, path: PathBuf) -> Result<Repository, RepoError> {
         let url = self.get_url();
         let reference = self
             .get_commit_ref(refs)
             .to_owned();
-        spawn_blocking(move || {
+        let repo = spawn_blocking(move || {
             let repository = Self::get_repository(url, &path)?;
-            Self::reset_to_commit(&repository, &reference)
-        })
+            Self::reset_to_commit(&repository, &reference)?;
+            Ok(repository)
+        } as Result<Repository, RepoError>)
         .await??;
-        Ok(())
+        Ok(repo)
     }
 }
 
@@ -136,4 +177,34 @@ pub async fn setup_repositories(path: &Path, version: &SpigotVersion) -> Result<
     info!("Repositories successfully setup");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use crate::build_tools::spigot::{get_version, VersionRefs};
+    use crate::utils::git::Repo;
+    use std::path::Path;
+
+    #[tokio::test]
+    async fn try_get_refs() {
+        dotenv::dotenv().ok();
+        env_logger::init();
+
+        let refs = VersionRefs {
+            build_data: "059e48d0b4666138c4a8330ee38310d74824a848".to_string(),
+            bukkit: "".to_string(),
+            craft_bukkit: "".to_string(),
+            spigot: "".to_string(),
+        };
+
+        let repo_path = Path::new("build");
+        let repo = Repo::BuildData
+            .setup(&refs, repo_path.join("build_data"))
+            .await
+            .unwrap();
+        let reference = Repo::get_mappings_reference(&repo).unwrap();
+        let md = md5::compute(reference);
+        let hash = &format!("{md:?}")[24..];
+        println!("{hash}")
+    }
 }
