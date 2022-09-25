@@ -20,6 +20,7 @@ use tokio::try_join;
 use zip::result::ZipError;
 
 mod mapping;
+mod mappings_v2;
 mod maven;
 pub(crate) mod spigot;
 

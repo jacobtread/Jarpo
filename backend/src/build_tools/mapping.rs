@@ -196,14 +196,13 @@ impl<'a, 'b> Mapper<'a, 'b> {
     }
 
     pub fn make_csrg(&self, methods: bool) -> String {
-        let mut out = String::new();
+        let mut out = Vec::new();
         for comment in &self.comments {
-            out.push_str(comment);
-            out.push('\n');
+            out.push(comment.to_string());
         }
 
         let type_regex = Regex::new(r"(.*?)\s->\s(.*):").expect("Regex Failure");
-        let member_regex = Regex::new(r"(?:\d+:\d+:)?(.*) (.*) -> (.*)").expect("Regex Failure");
+        let member_regex = Regex::new(r"(?:\d+:\d+:)?(.+) (.*) -> (.*)").expect("Regex Failure");
 
         let lines = self.mojang.lines();
         let mut current_class: Option<String> = None;
@@ -247,12 +246,8 @@ impl<'a, 'b> Mapper<'a, 'b> {
                         if !methods && (obfuscated.eq("if") || obfuscated.eq("do")) {
                             obfuscated.push('_');
                         }
-                        out.push_str(current_class);
-                        out.push(' ');
-                        out.push_str(&obfuscated);
-                        out.push(' ');
-                        out.push_str(&original);
-                        out.push('\n');
+                        let line = format!("{} {} {}", current_class, obfuscated, original);
+                        out.push(line);
                     } else if methods {
                         let mut ret = match capture.get(1) {
                             Some(value) => value,
@@ -265,6 +260,7 @@ impl<'a, 'b> Mapper<'a, 'b> {
                         let args = &original[args_start..];
                         let sig = self.csrg_desc(args, ret.as_str());
                         let moj_name = &original[0..args_start];
+
                         if obfuscated.eq(moj_name)
                             || moj_name.contains('$')
                             || obfuscated.eq("<init>")
@@ -272,20 +268,19 @@ impl<'a, 'b> Mapper<'a, 'b> {
                         {
                             continue;
                         }
-                        out.push_str(current_class);
-                        out.push(' ');
-                        out.push_str(&obfuscated);
-                        out.push(' ');
-                        out.push_str(&sig);
-                        out.push(' ');
-                        out.push_str(moj_name);
-                        out.push('\n');
+                        info!(
+                            "CCLASS {current_class} OBFL {obfuscated}, SIG: {sig}, MOJ: {moj_name}"
+                        );
+
+                        let line = format!("{} {} {} {}", current_class, obfuscated, sig, moj_name);
+                        out.push(line);
                     }
                 }
             }
         }
 
-        out
+        out.sort();
+        out.join("\n")
     }
 }
 
@@ -297,7 +292,9 @@ mod test {
 
     #[test]
     fn make_csrg() {
-        let bukkit_path = Path::new("test/build/bukkit-1.14-cl.csrg");
+        dotenv::dotenv().ok();
+        env_logger::init();
+        let bukkit_path = Path::new("test/build/bukkit-1.18-cl.csrg");
         let mojang_path = Path::new("test/build/server.txt");
 
         let bukkit = read(bukkit_path).unwrap();
