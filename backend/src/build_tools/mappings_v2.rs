@@ -1,43 +1,24 @@
 use bimap::BiMap;
+use hashcow::CowHashMap;
 use log::info;
 use std::collections::HashMap;
 use std::hash::Hash;
 
-type MojangMapping = HashMap<String, String>;
-type Mapping<'a> = HashMap<&'a str, &'a str>;
+/// Cow HashMaps are used for holding mappings because the mojang mappings
+/// are modified so they become owned strings but the bukkit mappings are
+/// not owned
+type CowMapping<'a> = CowHashMap<'a, str, str>;
 
 pub struct Mapper<'a> {
     /// Comments present at the top of the loaded bukkit mappings file
     comments: Vec<&'a str>,
     /// Mapping from Obfuscated -> Bukkit
-    obf_2_bukkit: Mapping<'a>,
+    obf_2_bukkit: CowMapping<'a>,
     /// Mapping from Bukkit -> Obfuscated
-    bukkit_2_obf: Mapping<'a>,
+    bukkit_2_obf: HashMap<&'a str, &'a str>,
 }
 
-/// Trait to allow retrievel of mappings from different mapping types
-/// because some mappings are stored as string slices while others as
-/// owned string which causes typing issues.
-pub trait GetMapping {
-    fn get_mapping(&self, value: &str) -> Option<String>;
-}
-
-impl GetMapping for MojangMapping {
-    fn get_mapping(&self, value: &str) -> Option<String> {
-        return self
-            .get(value)
-            .map(|value| value.clone());
-    }
-}
-
-impl<'a> GetMapping for Mapping<'a> {
-    fn get_mapping(&self, value: &str) -> Option<String> {
-        return self
-            .get(value)
-            .map(|value| value.to_string());
-    }
-}
-
+/// Represents a value that was mapped
 #[derive(Debug)]
 enum MappedMember<'a> {
     Field {
@@ -57,8 +38,8 @@ impl<'a> Mapper<'a> {
     /// The mojang source in not parsed unless it is needed.
     pub fn new(bukkit: &'a str) -> Self {
         let mut comments = Vec::new();
-        let mut obf_2_bukkit = Mapping::new();
-        let mut bukkit_2_obf = Mapping::new();
+        let mut obf_2_bukkit = CowMapping::new();
+        let mut bukkit_2_obf = HashMap::new();
         {
             for line in bukkit.lines() {
                 if line.starts_with('#') {
@@ -69,7 +50,7 @@ impl<'a> Mapper<'a> {
                         .take(2)
                         .collect::<Vec<&str>>();
                     if parts.len() == 2 {
-                        obf_2_bukkit.insert(parts[0], parts[1]);
+                        obf_2_bukkit.insert_borrowed(parts[0], parts[1]);
                         bukkit_2_obf.insert(parts[1], parts[0]);
                     }
                 }
@@ -86,10 +67,10 @@ impl<'a> Mapper<'a> {
     /// Determines the mapped value to the provided value by
     /// looking in the provided map. If the value is made of
     /// of nested values seperated by $ they are mapped too.
-    fn mapped_value<A: GetMapping>(value: &str, map: &A) -> Option<String> {
+    fn mapped_value(value: &str, map: &CowMapping) -> Option<String> {
         // Non nested values can be retrieved immediately
-        if let Some(mapped) = map.get_mapping(value) {
-            return Some(mapped);
+        if let Some(mapped) = map.get(value) {
+            return Some(mapped.to_string());
         }
 
         // Skip values with no nesting that can't be mapped
@@ -105,9 +86,9 @@ impl<'a> Mapper<'a> {
             if let Some(index) = current.rfind('$') {
                 inner.insert_str(0, &current[index..]);
                 current = &current[..index];
-                if let Some(mapped) = map.get_mapping(current) {
+                if let Some(mapped) = map.get(current) {
                     let mut out = String::with_capacity(inner.len() + mapped.len());
-                    out.push_str(&mapped);
+                    out.push_str(mapped);
                     out.push_str(&inner);
 
                     return Some(out);
@@ -127,13 +108,13 @@ impl<'a> Mapper<'a> {
     /// Translates the provided mojang name into the
     /// bukkit mapped value for its obfuscated name.
     /// `mappings` is the Mojang to obfuscated mappings
-    fn translate_name(&self, mojang: &str, mappings: &MojangMapping) -> Option<String> {
+    fn translate_name(&self, mojang: &str, mappings: &CowMapping) -> Option<String> {
         let obfuscated_name = Self::mapped_value(mojang, mappings)?;
         self.get_bukkit_name(&obfuscated_name)
     }
 
     /// Loads the mojang mappings into the `mojang-2_obf` map
-    fn load_mojang<'b>(mojang: &'b str, out: &mut MojangMapping) {
+    fn load_mojang(mojang: &str, out: &mut CowMapping) {
         for line in mojang.lines() {
             /// Line formatted like (net.minecraft.Util$5 -> ad$4:)
             if !line.ends_with(':') {
@@ -141,7 +122,7 @@ impl<'a> Mapper<'a> {
             }
 
             if let Some((mojang_name, obf_name)) = Self::try_parse_class_line(line) {
-                out.insert(mojang_name, obf_name);
+                out.insert_owned(mojang_name, obf_name);
             }
         }
     }
@@ -202,7 +183,7 @@ impl<'a> Mapper<'a> {
         &mut self,
         args: &str,
         return_type: &str,
-        mappings: &MojangMapping,
+        mappings: &CowMapping,
     ) -> String {
         let mut output = String::new();
         output.push('(');
@@ -238,7 +219,7 @@ impl<'a> Mapper<'a> {
     }
 
     /// Converts the provided value type to a csrg / bukkit type
-    fn convert_type(&self, value: &str, mappings: &MojangMapping) -> String {
+    fn convert_type(&self, value: &str, mappings: &CowMapping) -> String {
         if let Some(jvm_char) = Self::get_jvm_type(value) {
             String::from(jvm_char)
         } else if value.ends_with("[]") {
@@ -260,7 +241,7 @@ impl<'a> Mapper<'a> {
     }
 
     pub fn make_csrg<'b>(&mut self, mojang: &'b str, members: bool) -> String {
-        let mut mojang_mappings = MojangMapping::new();
+        let mut mojang_mappings = CowMapping::new();
         if members {
             Self::load_mojang(mojang, &mut mojang_mappings);
         }
