@@ -1,5 +1,5 @@
 use crate::build_tools::maven::MavenError;
-use crate::build_tools::spigot::SpigotError;
+use crate::build_tools::spigot::{SpigotError, SpigotVersion};
 use crate::define_from_value;
 use crate::models::build_tools::BuildDataInfo;
 use crate::utils::constants::{
@@ -7,9 +7,11 @@ use crate::utils::constants::{
 };
 use crate::utils::git::{setup_repositories, RepoError};
 use crate::utils::hash::HashType;
+use crate::utils::net::{download_file, NetworkError};
 use futures::future::TryFutureExt;
 use log::{info, warn};
 use std::fs::{remove_dir, remove_dir_all};
+use std::intrinsics::const_eval_select;
 use std::io;
 use std::io::{copy, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
@@ -35,6 +37,7 @@ pub enum BuildToolsError {
     Request(reqwest::Error),
     Join(JoinError),
     Zip(ZipError),
+    Network(NetworkError),
 }
 
 define_from_value! {
@@ -47,7 +50,15 @@ define_from_value! {
         Request = reqwest::Error,
         Join = JoinError,
         Zip = ZipError,
+        Network = NetworkError,
     }
+}
+
+pub struct Context<'a> {
+    spigot_version: &'a SpigotVersion,
+    build_info: &'a BuildDataInfo,
+    build_path: &'a Path,
+    work_path: &'a PathBuf,
 }
 
 pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
@@ -58,11 +69,10 @@ pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
         create_dir(build_path).await?;
     }
 
-    let setup_future =
-        setup_repositories(build_path, &spigot_version).map_err(|err| BuildToolsError::Repo(err));
-    let maven_future = maven::setup(build_path).map_err(|err| BuildToolsError::Maven(err));
-
-    let (_, maven_path) = try_join!(setup_future, maven_future)?;
+    let (mappings_hash, maven_path) = try_join!(
+        setup_repositories(build_path, &spigot_version).map_err(|err| BuildToolsError::Repo(err)),
+        maven::setup(build_path).map_err(|err| BuildToolsError::Maven(err))
+    )?;
 
     let build_info = get_build_info(build_path).await?;
 
@@ -82,6 +92,91 @@ pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
 
     // TODO: Remove jar signature. Possible to do later?
     remove_embed_signature(build_path, &jar_path);
+
+    let work_path = build_path.join("work");
+
+    let context = Context {
+        spigot_version: &spigot_version,
+        build_info: &build_info,
+        build_path,
+        work_path: &work_path,
+    };
+
+    apply_mappings(&context, &jar_path, &mappings_hash).await?;
+
+    Ok(())
+}
+
+async fn apply_mappings(
+    context: &Context<'_>,
+    jar_path: &PathBuf,
+    mappings_hash: &str,
+) -> Result<(), BuildToolsError> {
+    let final_mapped_jar = context
+        .work_path
+        .join(format!("mapped.{mappings_hash}.jar"));
+
+    if final_mapped_jar.exists() {
+        if !final_mapped_jar.is_file() {
+            remove_dir_all(final_mapped_jar).await?;
+        } else {
+            info!("Final mapped jar already exists.. Skipping");
+            return Ok(());
+        }
+    }
+
+    let work_path = context.work_path;
+    let build_info = context.build_info;
+
+    let build_data_path = context
+        .build_path
+        .join("build_data");
+    let mappings_path = build_data_path.join("mappings");
+
+    let class_mappings_path = mappings_path.join(&build_info.class_mappings);
+    let mut member_mappings_path: Option<PathBuf> = None;
+    if let Some(member_mappings) = &build_info.member_mappings {
+        let path = mappings_path.join(member_mappings);
+        if path.exists() {
+            member_mappings_path = Some(path)
+        }
+    }
+
+    let field_mappings_path = work_path.join(format!("bukkit-{mappings_hash}-fields.csrg"));
+
+    if let Some(mappings_url) = &context
+        .build_info
+        .mappings_url
+    {
+        let minecraft_version = &context
+            .build_info
+            .minecraft_version;
+        let mojang_mappings_path =
+            work_path.join(format!("minecraft_server.{minecraft_version}.txt"));
+        if !mojang_mappings_path.exists() {
+            download_file(mappings_url, &mojang_mappings_path).await?;
+        }
+
+        let bukkit_mappings = read(class_mappings_path).await?;
+        let bukkit_mappings = String::from_utf8_lossy(&bukkit_mappings);
+        let mut mapper = mapping::Mapper::new(bukkit_mappings.as_ref());
+
+        if member_mappings_path.is_none() || !field_mappings_path.exists() {
+            let mojang = read(mojang_mappings_path).await?;
+            let mojang = String::from_utf8_lossy(&mojang);
+            if member_mappings_path.is_none() {
+                let members_path = work_path.join(format!("bukkit-{mappings_hash}-members.csrg"));
+                let output = mapper.make_csrg(&mojang, true);
+                write(members_path, output).await?;
+                member_mappings_path = Some(members_path.clone());
+            } else {
+                let output = mapper.make_csrg(&mojang, false);
+                write(field_mappings_path, output).await?;
+            }
+        }
+
+        if let Some(member_mappings) = &member_mappings_path {}
+    }
 
     Ok(())
 }

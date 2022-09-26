@@ -31,6 +31,8 @@ pub struct BuildDataInfo {
     pub tools_version: Option<u16>,
     /// Optional URL to the server jar
     pub server_url: Option<String>,
+    /// Optional URL to the server jar
+    pub mappings_url: Option<String>,
     /// Optional spigot version
     pub spigot_version: Option<String>,
 }

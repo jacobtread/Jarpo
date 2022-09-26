@@ -160,14 +160,14 @@ impl Repo {
 
 /// Sets up the required repositories by downloading them and setting
 /// the correct commit ref this is done Asynchronously
-pub async fn setup_repositories(path: &Path, version: &SpigotVersion) -> Result<(), RepoError> {
+pub async fn setup_repositories(path: &Path, version: &SpigotVersion) -> Result<String, RepoError> {
     let refs = &version.refs;
     info!(
         "Setting up repositories in \"{}\" (build_data, bukkit, spigot)",
         path.to_string_lossy()
     );
 
-    try_join!(
+    let (build_data_repo, _, _, _) = try_join!(
         Repo::BuildData.setup(refs, path.join("build_data")),
         Repo::Spigot.setup(refs, path.join("spigot")),
         Repo::Bukkit.setup(refs, path.join("bukkit")),
@@ -176,12 +176,20 @@ pub async fn setup_repositories(path: &Path, version: &SpigotVersion) -> Result<
 
     info!("Repositories successfully setup");
 
-    Ok(())
+    info!("Determining mappings hash");
+
+    let reference = Repo::get_mappings_reference(&build_data_repo)?;
+    let md = md5::compute(reference);
+    let hash = &format!("{md:x}")[24..];
+
+    info!("Mappings hash: {hash}");
+
+    Ok(hash.to_string())
 }
 
 #[cfg(test)]
 mod test {
-    use crate::build_tools::spigot::{get_version, VersionRefs};
+    use crate::build_tools::spigot::VersionRefs;
     use crate::utils::git::Repo;
     use std::path::Path;
 
@@ -204,7 +212,7 @@ mod test {
             .unwrap();
         let reference = Repo::get_mappings_reference(&repo).unwrap();
         let md = md5::compute(reference);
-        let hash = &format!("{md:?}")[24..];
+        let hash = &format!("{md:x}")[24..];
         println!("{hash}")
     }
 }
