@@ -1,4 +1,4 @@
-use crate::build_tools::maven::MavenError;
+use crate::build_tools::maven::{MavenContext, MavenError};
 use crate::build_tools::spigot::{SpigotError, SpigotVersion};
 use crate::define_from_value;
 use crate::models::build_tools::BuildDataInfo;
@@ -10,12 +10,10 @@ use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
 use futures::future::TryFutureExt;
 use log::{info, warn};
-use std::fs::{remove_dir, remove_dir_all};
-use std::intrinsics::const_eval_select;
 use std::io;
 use std::io::{copy, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use tokio::fs::{create_dir, create_dir_all, read, remove_file, write, File};
+use tokio::fs::{create_dir, create_dir_all, read, remove_dir_all, remove_file, write, File};
 use tokio::io::AsyncWriteExt;
 use tokio::task::{spawn_blocking, JoinError, JoinHandle};
 use tokio::try_join;
@@ -59,6 +57,7 @@ pub struct Context<'a> {
     build_info: &'a BuildDataInfo,
     build_path: &'a Path,
     work_path: &'a PathBuf,
+    maven: MavenContext<'a>,
 }
 
 pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
@@ -100,6 +99,11 @@ pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
         build_info: &build_info,
         build_path,
         work_path: &work_path,
+        maven: MavenContext {
+            spigot_version: &spigot_version,
+            build_info: &build_info,
+            script_path: maven_path,
+        },
     };
 
     apply_mappings(&context, &jar_path, &mappings_hash).await?;
@@ -112,9 +116,12 @@ async fn apply_mappings(
     jar_path: &PathBuf,
     mappings_hash: &str,
 ) -> Result<(), BuildToolsError> {
-    let final_mapped_jar = context
-        .work_path
-        .join(format!("mapped.{mappings_hash}.jar"));
+    let work_path = context.work_path;
+    if !work_path.exists() {
+        create_dir_all(&work_path).await?;
+    }
+
+    let final_mapped_jar = work_path.join(format!("mapped.{mappings_hash}.jar"));
 
     if final_mapped_jar.exists() {
         if !final_mapped_jar.is_file() {
@@ -125,13 +132,16 @@ async fn apply_mappings(
         }
     }
 
-    let work_path = context.work_path;
     let build_info = context.build_info;
 
     let build_data_path = context
         .build_path
         .join("build_data");
     let mappings_path = build_data_path.join("mappings");
+
+    if !mappings_path.exists() {
+        create_dir_all(&mappings_path).await?;
+    }
 
     let class_mappings_path = mappings_path.join(&build_info.class_mappings);
     let mut member_mappings_path: Option<PathBuf> = None;
@@ -143,6 +153,15 @@ async fn apply_mappings(
     }
 
     let field_mappings_path = work_path.join(format!("bukkit-{mappings_hash}-fields.csrg"));
+
+    let spigot_version_str: &str = if let Some(spigot_version) = &context
+        .build_info
+        .spigot_version
+    {
+        spigot_version.as_str()
+    } else {
+        "null"
+    };
 
     if let Some(mappings_url) = &context
         .build_info
@@ -157,25 +176,110 @@ async fn apply_mappings(
             download_file(mappings_url, &mojang_mappings_path).await?;
         }
 
-        let bukkit_mappings = read(class_mappings_path).await?;
+        let bukkit_mappings = read(&class_mappings_path).await?;
         let bukkit_mappings = String::from_utf8_lossy(&bukkit_mappings);
         let mut mapper = mapping::Mapper::new(bukkit_mappings.as_ref());
 
         if member_mappings_path.is_none() || !field_mappings_path.exists() {
-            let mojang = read(mojang_mappings_path).await?;
+            let mojang = read(&mojang_mappings_path).await?;
             let mojang = String::from_utf8_lossy(&mojang);
             if member_mappings_path.is_none() {
                 let members_path = work_path.join(format!("bukkit-{mappings_hash}-members.csrg"));
                 let output = mapper.make_csrg(&mojang, true);
-                write(members_path, output).await?;
+                write(&members_path, output).await?;
                 member_mappings_path = Some(members_path.clone());
             } else {
                 let output = mapper.make_csrg(&mojang, false);
-                write(field_mappings_path, output).await?;
+                write(&field_mappings_path, output).await?;
             }
         }
 
-        if let Some(member_mappings) = &member_mappings_path {}
+        let version_arg = format!("-Dversion={}", spigot_version_str);
+
+        if let Some(member_mappings) = &member_mappings_path {
+            context
+                .maven
+                .execute(&[
+                    "install:install-file",
+                    &format!("-Dfile={}", member_mappings.to_string_lossy()),
+                    "-Dpackaging=csrg",
+                    "-DgroupId=org.spigotmc",
+                    "-DartifactId=minecraft-server",
+                    &version_arg,
+                    "-Dclassifier=maps-spigot-members",
+                    "-DgeneratePom=false",
+                ])
+                .await?;
+        }
+
+        if field_mappings_path.exists() {
+            context
+                .maven
+                .execute(&[
+                    "install:install-file",
+                    &format!("-Dfile={}", field_mappings_path.to_string_lossy()),
+                    "-Dpackaging=csrg",
+                    "-DgroupId=org.spigotmc",
+                    "-DartifactId=minecraft-server",
+                    &version_arg,
+                    "-Dclassifier=maps-spigot-fields",
+                    "-DgeneratePom=false",
+                ])
+                .await?;
+
+            let combined_maps_name = format!("bukkit-{}-combined.csrg", mappings_hash);
+            let combined_maps_path = work_path.join(combined_maps_name);
+            if !combined_maps_path.exists() {
+                if let Some(member_mappings) = member_mappings_path {
+                    let member_mappings = read(member_mappings).await?;
+                    let member_mappings = String::from_utf8_lossy(&member_mappings);
+                    let out = mapper.make_combined(&member_mappings);
+                    write(&combined_maps_path, out).await?;
+
+                    context
+                        .maven
+                        .execute(&[
+                            "install:install-file",
+                            &format!("-Dfile={}", combined_maps_path.to_string_lossy()),
+                            "-Dpackaging=csrg",
+                            "-DgroupId=org.spigotmc",
+                            "-DartifactId=minecraft-server",
+                            &version_arg,
+                            "-Dclassifier=maps-spigot",
+                            "-DgeneratePom=false",
+                        ])
+                        .await?;
+                }
+            }
+        } else {
+            context
+                .maven
+                .execute(&[
+                    "install:install-file",
+                    &format!("-Dfile={}", class_mappings_path.to_string_lossy()),
+                    "-Dpackaging=csrg",
+                    "-DgroupId=org.spigotmc",
+                    "-DartifactId=minecraft-server",
+                    &version_arg,
+                    "-Dclassifier=maps-spigot",
+                    "-DgeneratePom=false",
+                ])
+                .await?;
+        }
+
+        context
+            .maven
+            .execute(&[
+                "install:install-file",
+                &format!("-Dfile={}", mojang_mappings_path.to_string_lossy()),
+                "-Dpackaging=txt",
+                "-DgroupId=org.spigotmc",
+                "-DartifactId=minecraft-server",
+                &version_arg,
+                "-Dclassifier=maps-mojang",
+                "-DgeneratePom=false",
+            ])
+            .await?;
     }
 
     Ok(())

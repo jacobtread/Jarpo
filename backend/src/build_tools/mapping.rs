@@ -2,7 +2,10 @@ use bimap::BiMap;
 use hashcow::CowHashMap;
 use log::info;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::hash::Hash;
+use std::path::PathBuf;
+use tokio::process::Command;
 
 /// Cow HashMaps are used for holding mappings because the mojang mappings
 /// are modified so they become owned strings but the bukkit mappings are

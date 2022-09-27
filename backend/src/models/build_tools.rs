@@ -54,6 +54,7 @@ impl Default for BuildDataInfo {
             final_map_command: None,
             tools_version: None,
             server_url: None,
+            mappings_url: None,
             spigot_version: None,
         }
     }

@@ -33,6 +33,6 @@ pub async fn download_file<A: AsRef<Path>>(url: &str, path: A) -> Result<(), Net
     let client = create_reqwest()?;
     let response = client.get(url).send().await?;
     let bytes = response.bytes().await?;
-    write(file_path, bytes).await?;
+    write(path, bytes).await?;
     Ok(())
 }
