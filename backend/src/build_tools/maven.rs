@@ -79,6 +79,7 @@ pub struct MavenContext<'a> {
 }
 
 impl<'a> MavenContext<'a> {
+    /// Executes the maven executable with the provided arguments
     pub async fn execute(&self, args: &[&str]) -> Result<ExitStatus, MavenError> {
         let path = self
             .script_path
@@ -105,13 +106,13 @@ impl<'a> MavenContext<'a> {
         let output = command.output().await?;
 
         if output.status.success() {
-            let stdout = output.stderr;
+            let stdout = output.stdout;
             let stdout = String::from_utf8_lossy(&stdout);
-            info!("Maven Output:\n{stdout}")
+            info!("Maven Output:\n{stdout}");
         } else {
             let stderr = output.stderr;
             let stderr = String::from_utf8_lossy(&stderr);
-            error!("Maven Error:\n{stderr}")
+            error!("Maven Error:\n{stderr}");
         }
 
         Ok(output.status)
