@@ -4,7 +4,7 @@ use crate::models::build_tools::BuildDataInfo;
 use crate::utils::constants::{MAVEN_DOWNLOAD_URL, MAVEN_VERSION};
 use crate::utils::net::create_reqwest;
 use crate::utils::zip::{unzip, ZipError};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -106,15 +106,48 @@ impl<'a> MavenContext<'a> {
         let output = command.output().await?;
 
         if output.status.success() {
-            let stdout = output.stdout;
-            let stdout = String::from_utf8_lossy(&stdout);
-            info!("Maven Output:\n{stdout}");
+            Self::transfer_logging_output(&output.stdout, false);
         } else {
-            let stderr = output.stderr;
-            let stderr = String::from_utf8_lossy(&stderr);
-            error!("Maven Error:\n{stderr}");
+            Self::transfer_logging_output(&output.stderr, true);
         }
 
         Ok(output.status)
+    }
+
+    fn transfer_logging_output(output: &[u8], default_error: bool) {
+        let output = String::from_utf8_lossy(output);
+
+        fn get_line_parts(line: &str) -> Option<(&str, &str)> {
+            let start = line.find('[')?;
+            let end = line.find(']')?;
+            if end <= start {
+                return None;
+            }
+            let level = &line[start + 1..end - 1];
+            let text = &line[end + 1..];
+            Some((level, text))
+        }
+
+        for line in output.lines() {
+            let (level, text) = match get_line_parts(line) {
+                Some(value) => value,
+                None => {
+                    info!("{line}");
+                    continue;
+                }
+            };
+
+            match level {
+                "WARN" => warn!("MAVEN: {text}"),
+                "FATAL" | "ERROR" => error!("MAVEN: {text}"),
+                _ => {
+                    if default_error {
+                        error!("MAVEN: {text}");
+                    } else {
+                        info!("MAVEN: {text}");
+                    }
+                }
+            }
+        }
     }
 }
