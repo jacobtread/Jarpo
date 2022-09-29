@@ -199,32 +199,14 @@ async fn apply_mappings(
         if let Some(member_mappings) = &member_mappings_path {
             context
                 .maven
-                .execute(&[
-                    "install:install-file",
-                    &format!("-Dfile={}", member_mappings.to_string_lossy()),
-                    "-Dpackaging=csrg",
-                    "-DgroupId=org.spigotmc",
-                    "-DartifactId=minecraft-server",
-                    &version_arg,
-                    "-Dclassifier=maps-spigot-members",
-                    "-DgeneratePom=false",
-                ])
+                .install_file(&member_mappings, "csrg", "maps-spigot-members")
                 .await?;
         }
 
         if field_mappings_path.exists() {
             context
                 .maven
-                .execute(&[
-                    "install:install-file",
-                    &format!("-Dfile={}", field_mappings_path.to_string_lossy()),
-                    "-Dpackaging=csrg",
-                    "-DgroupId=org.spigotmc",
-                    "-DartifactId=minecraft-server",
-                    &version_arg,
-                    "-Dclassifier=maps-spigot-fields",
-                    "-DgeneratePom=false",
-                ])
+                .install_file(&field_mappings_path, "csrg", "maps-spigot-fields")
                 .await?;
 
             let combined_maps_name = format!("bukkit-{}-combined.csrg", mappings_hash);
@@ -238,47 +220,20 @@ async fn apply_mappings(
 
                     context
                         .maven
-                        .execute(&[
-                            "install:install-file",
-                            &format!("-Dfile={}", combined_maps_path.to_string_lossy()),
-                            "-Dpackaging=csrg",
-                            "-DgroupId=org.spigotmc",
-                            "-DartifactId=minecraft-server",
-                            &version_arg,
-                            "-Dclassifier=maps-spigot",
-                            "-DgeneratePom=false",
-                        ])
+                        .install_file(&combined_maps_path, "csrg", "maps-spigot")
                         .await?;
                 }
             }
         } else {
             context
                 .maven
-                .execute(&[
-                    "install:install-file",
-                    &format!("-Dfile={}", class_mappings_path.to_string_lossy()),
-                    "-Dpackaging=csrg",
-                    "-DgroupId=org.spigotmc",
-                    "-DartifactId=minecraft-server",
-                    &version_arg,
-                    "-Dclassifier=maps-spigot",
-                    "-DgeneratePom=false",
-                ])
+                .install_file(&class_mappings_path, "csrg", "maps-spigot")
                 .await?;
         }
 
         context
             .maven
-            .execute(&[
-                "install:install-file",
-                &format!("-Dfile={}", mojang_mappings_path.to_string_lossy()),
-                "-Dpackaging=txt",
-                "-DgroupId=org.spigotmc",
-                "-DartifactId=minecraft-server",
-                &version_arg,
-                "-Dclassifier=maps-mojang",
-                "-DgeneratePom=false",
-            ])
+            .install_file(&mojang_mappings_path, "txt", "maps-mojang")
             .await?;
     }
 

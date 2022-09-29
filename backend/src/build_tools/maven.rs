@@ -5,6 +5,7 @@ use crate::utils::constants::{MAVEN_DOWNLOAD_URL, MAVEN_VERSION};
 use crate::utils::net::create_reqwest;
 use crate::utils::zip::{unzip, ZipError};
 use log::{debug, error, info, warn};
+use std::env::current_dir;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -72,15 +73,23 @@ pub async fn setup(path: &Path) -> Result<PathBuf, MavenError> {
     Ok(script_path)
 }
 
+/// Context for storing information used by maven
+/// executions
 pub struct MavenContext<'a> {
     pub spigot_version: &'a SpigotVersion,
     pub build_info: &'a BuildDataInfo,
+    /// The path to the maven scripts that are used to run
+    /// maven commands
     pub script_path: PathBuf,
 }
 
 impl<'a> MavenContext<'a> {
     /// Executes the maven executable with the provided arguments
-    pub async fn execute(&self, args: &[&str]) -> Result<ExitStatus, MavenError> {
+    pub async fn execute(
+        &self,
+        working_dir: impl AsRef<Path>,
+        args: &[&str],
+    ) -> Result<ExitStatus, MavenError> {
         let path = self
             .script_path
             .to_string_lossy();
@@ -102,21 +111,65 @@ impl<'a> MavenContext<'a> {
         let cmd: &str = "sh";
 
         let mut command = Command::new(cmd);
+        command.current_dir(working_dir);
         command.args(new_args);
         let output = command.output().await?;
 
         if output.status.success() {
             Self::transfer_logging_output(&output.stdout, false);
         } else {
-            Self::transfer_logging_output(&output.stderr, true);
+            let stderr = output.stderr;
+            if stderr.is_empty() {
+                Self::transfer_logging_output(&output.stdout, true);
+            } else {
+                Self::transfer_logging_output(&stderr, true);
+            }
         }
 
         Ok(output.status)
     }
 
+    pub async fn install_file(
+        &self,
+        file: &PathBuf,
+        packaging: &str,
+        classifier: &str,
+    ) -> Result<ExitStatus, MavenError> {
+        let working_dir = current_dir()?;
+        let version_arg = if let Some(spigot_version) = &self.build_info.spigot_version {
+            spigot_version
+        } else {
+            "null"
+        };
+        self.execute(
+            working_dir,
+            &[
+                "install:install-file",
+                &format!("-Dfile={}", file.to_string_lossy()),
+                &format!("-Dpackaging={}", packaging),
+                "-DgroupId=org.spigotmc",
+                "-DartifactId=minecraft-server",
+                &format!("-Dversion={}", version_arg),
+                &format!("-Dclassifier={}", classifier),
+                "-DgeneratePom=false",
+            ],
+        )
+        .await
+    }
+
+    /// Transfers the logging output from a process and transfers it into
+    /// the logging functions for this application.
+    ///
+    /// `output` is the logging output as UTF-8 bytes
+    /// `default_error` determines whether unknown logging levels
+    ///                 will fall back to info or error
     fn transfer_logging_output(output: &[u8], default_error: bool) {
         let output = String::from_utf8_lossy(output);
 
+        /// Function for parsing the string and providing its
+        /// individual parts (format: `[LEVEL] TEXT`) splits
+        /// this into two string slices (LEVEL, TEXT). Will
+        /// return None if unable to parse.
         fn get_line_parts(line: &str) -> Option<(&str, &str)> {
             let start = line.find('[')?;
             let end = line.find(']')?;
@@ -138,13 +191,13 @@ impl<'a> MavenContext<'a> {
             };
 
             match level {
-                "WARN" => warn!("MAVEN: {text}"),
-                "FATAL" | "ERROR" => error!("MAVEN: {text}"),
+                "WARN" => warn!("{text}"),
+                "FATAL" | "ERROR" => error!("{text}"),
                 _ => {
                     if default_error {
-                        error!("MAVEN: {text}");
+                        error!("{text}");
                     } else {
-                        info!("MAVEN: {text}");
+                        info!("{text}");
                     }
                 }
             }
