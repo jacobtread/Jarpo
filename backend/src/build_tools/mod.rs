@@ -1,27 +1,22 @@
 use crate::build_tools::mapping::Mapper;
 use crate::build_tools::maven::{MavenContext, MavenError};
-use crate::build_tools::spigot::{SpigotError, SpigotVersion};
+use crate::build_tools::spigot::SpigotError;
 use crate::define_from_value;
 use crate::models::build_tools::BuildDataInfo;
 use crate::utils::cmd::{execute_command, CommandError};
-use crate::utils::constants::{
-    MAVEN_DOWNLOAD_URL, MAVEN_VERSION, PARODY_BUILD_TOOLS_VERSION, SPIGOT_VERSIONS_URL, USER_AGENT,
-};
-use crate::utils::files::{ensure_dir_exists, ensure_is_file};
+use crate::utils::constants::PARODY_BUILD_TOOLS_VERSION;
+use crate::utils::files::{delete_existing, ensure_dir_exists, ensure_is_file};
 use crate::utils::git::{setup_repositories, RepoError};
 use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
+use crate::utils::zip::{extract_file, remove_from_zip, ZipError};
 use futures::future::TryFutureExt;
 use log::{info, warn};
 use std::env::current_dir;
 use std::io;
-use std::io::{copy, Cursor, Read, Write};
 use std::path::{Path, PathBuf, StripPrefixError};
-use tokio::fs::{create_dir, create_dir_all, read, remove_dir_all, remove_file, write, File};
-use tokio::io::AsyncWriteExt;
-use tokio::task::{spawn_blocking, JoinError, JoinHandle};
+use tokio::fs::{read, write};
 use tokio::try_join;
-use zip::result::ZipError;
 
 mod mapping;
 mod maven;
@@ -37,9 +32,7 @@ pub enum BuildToolsError {
     Maven(MavenError),
     MissingBuildInfo,
     Parse(serde_json::Error),
-    MissingFile(PathBuf),
     Request(reqwest::Error),
-    Join(JoinError),
     Zip(ZipError),
     Network(NetworkError),
     Command(CommandError),
@@ -54,7 +47,6 @@ define_from_value! {
         Maven = MavenError,
         Parse = serde_json::Error,
         Request = reqwest::Error,
-        Join = JoinError,
         Zip = ZipError,
         Network = NetworkError,
         Command = CommandError,
@@ -63,7 +55,6 @@ define_from_value! {
 }
 
 pub struct Context<'a> {
-    spigot_version: &'a SpigotVersion,
     build_info: &'a BuildDataInfo,
     build_path: &'a Path,
     work_path: &'a PathBuf,
@@ -98,13 +89,12 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
     let jar_path = prepare_vanilla_jar(build_path, &build_info).await?;
 
     // TODO: Remove jar signature. Possible to do later?
-    remove_embed_signature(build_path, &jar_path);
+    remove_embed_signature(build_path, &jar_path).await?;
 
     let work_path = build_path.join("work");
     ensure_dir_exists(&work_path).await?;
 
     let context = Context {
-        spigot_version: &spigot_version,
         build_info: &build_info,
         build_path,
         work_path: &work_path,
@@ -116,7 +106,7 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
         vanilla_jar: &jar_path,
     };
 
-    let m_paths = create_mappings(&context, &jar_path, &mappings_hash).await?;
+    let m_paths = create_mappings(&context, &mappings_hash).await?;
     if let Some(m_paths) = m_paths {
         apply_special_source(&context, m_paths, &mappings_hash).await?;
     }
@@ -148,6 +138,7 @@ async fn apply_special_source(
     m_paths: MappingsPaths,
     mappings_hash: &str,
 ) -> BuildResult<()> {
+    info!("Applying special source");
     let current_dir = current_dir()?;
     let work_path = context.work_path;
 
@@ -259,9 +250,9 @@ struct MappingsPaths {
 
 async fn create_mappings(
     context: &Context<'_>,
-    jar_path: &Path,
     mappings_hash: &str,
 ) -> BuildResult<Option<MappingsPaths>> {
+    info!("Setting up mappings");
     let work_path = context.work_path;
     // Final mapped jar name & path
     let fm_jar = format!("mapping.{mappings_hash}.jar");
@@ -299,14 +290,6 @@ async fn create_mappings(
     // Field mappings name & path
     let fm_path = format!("bukkit-{mappings_hash}-fields.csrg");
     let fm_path = work_path.join(fm_path);
-
-    // -Dversion argument (Not always provided so falls back to null)
-    let spigot_version_arg = context
-        .build_info
-        .spigot_version
-        .as_ref()
-        .map(|value| format!("-Dversion={value}"))
-        .unwrap_or_else(|| String::from("-Dversion=null"));
 
     if let Some(mappings_url) = &bd_info.mappings_url {
         let mc_version = &bd_info.minecraft_version;
@@ -435,7 +418,6 @@ async fn prepare_vanilla_jar(root: &Path, info: &BuildDataInfo) -> BuildResult<P
         }
         ExtractType::Done => {
             info!("Extracted embedded server jar");
-            remove_embed_signature(root, &embedded_path);
             embedded_path
         }
         _ => jar_path,
@@ -457,13 +439,10 @@ enum ExtractType {
 /// Attempts to extract the embedded jar from `path` to `embedded_path` but will
 /// return whether or not one existed.
 async fn extract_embedded(
-    path: &PathBuf,
+    jar_path: &PathBuf,
     embedded_path: &PathBuf,
     info: &BuildDataInfo,
 ) -> BuildResult<ExtractType> {
-    use std::fs::{read, write, File};
-
-    let file = File::open(path);
     let embedded_path = embedded_path.clone();
 
     let embedded_zip_path = format!(
@@ -471,44 +450,37 @@ async fn extract_embedded(
         info.minecraft_version
     );
 
-    let mut existing_hash: Option<String> = None;
-
-    if embedded_path.exists() && embedded_path.is_file() {
+    if ensure_is_file(&embedded_path).await? {
         if let Some(mc_hash) = &info.minecraft_hash {
-            existing_hash = Some(mc_hash.clone());
-        }
-    }
-
-    spawn_blocking(move || {
-        if let Some(existing_hash) = existing_hash {
-            let existing = read(&embedded_path)?;
-            if HashType::SHA256.is_match(&existing_hash, existing) {
+            let existing = read(&embedded_path).await?;
+            if HashType::SHA256.is_match(mc_hash, existing) {
                 info!("Already extracted embedded jar with matching hash. Skipping.");
                 return Ok(ExtractType::Cached);
             }
         }
-
-        let file = file?;
-        let mut archive = zip::ZipArchive::new(file)?;
-        if let Ok(mut embedded) = archive.by_name(&embedded_zip_path) {
-            if embedded.is_file() {
-                let mut bytes = Vec::with_capacity(embedded.size() as usize);
-                embedded.read_to_end(&mut bytes)?;
-                write(&embedded_path, bytes)?;
-                return Ok(ExtractType::Done);
-            }
-        }
-        Ok(ExtractType::None)
+    }
+    let existed = extract_file(jar_path, &embedded_path, &embedded_zip_path).await?;
+    Ok(if existed {
+        ExtractType::Done
+    } else {
+        ExtractType::None
     })
-    .await?
 }
 
 /// Removes the MOJANGCS.RSA and MOJANGCS.SF from the jar file or
 /// else they wont function.
-///
-/// TODO: It might be possible to move this forward to the decompile
-/// TODO: step rather than doing it early on here.
-fn remove_embed_signature(_path: &Path, _jar_path: &Path) {}
+async fn remove_embed_signature(path: &Path, jar_path: &Path) -> BuildResult<()> {
+    info!("Removing signature from jar");
+    let tmp = path.join("tmp-extract.jar");
+    delete_existing(&tmp).await?;
+    remove_from_zip(
+        jar_path,
+        &tmp,
+        &["META-INF/MOJANGCS.RSA", "META-INF/MOJANGCS.SF"],
+    )
+    .await?;
+    Ok(())
+}
 
 /// Checks whether the locally stored server jar hash matches the one
 /// that we are trying to build. If the hashes don't match or the jar
@@ -544,98 +516,60 @@ async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) -> BuildResult<
 #[cfg(test)]
 mod test {
     use crate::build_tools::run_build_tools;
+    use crate::build_tools::spigot::get_version_test;
+    use crate::build_tools::spigot::test::TEST_VERSIONS;
     use crate::models::build_tools::BuildDataInfo;
-    use crate::utils::constants::{SPIGOT_VERSIONS_URL, USER_AGENT};
     use crate::utils::git::setup_repositories;
-    use crate::utils::net::create_reqwest;
-    use env_logger::WriteStyle;
-    use log::LevelFilter;
-    use regex::{Match, Regex};
-    use std::fs::{create_dir, read, read_dir};
     use std::path::Path;
-    use tokio::fs::write;
+    use tokio::fs::read;
 
-    const TEST_VERSIONS: [&str; 12] = [
-        "1.8", "1.9", "1.10.2", "1.11", "1.12", "1.13", "1.14", "1.16.1", "1.17", "1.18", "1.19",
-        "latest",
-    ];
+    /// Sets up the local repositories with data from all the
+    /// versions listed in `TEST_VERSIONS`
+    #[tokio::test]
+    async fn setup_all() {
+        for version in TEST_VERSIONS {
+            setup_repo(version).await;
+        }
+    }
 
-    /// Checks all the JSON files in test/spigot (Only those present in
-    /// `TEST_VERSIONS`) to ensure that they are all able to be parsed
-    /// without any issues
-    // #[test]
-    // fn test_versions() {
-    //     let root_path = Path::new("test/spigot");
-    //     assert!(root_path.exists());
-    //     for version in TEST_VERSIONS {
-    //         let path = root_path.join(format!("{}.json", version));
-    //         assert!(path.exists() && path.is_file());
-    //         let contents = read(path).unwrap();
-    //         let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
-    //         println!("{:?}", parsed)
-    //     }
-    // }
+    /// Sets up the local repositories with data from the oldest
+    /// stored version (1.8)
+    #[tokio::test]
+    async fn setup_oldest() {
+        let version = TEST_VERSIONS[0];
+        setup_repo(version).await;
+    }
 
-    /// Clones the required repositories for each version pulling the
-    /// required reference commit for each different version in
-    /// `TEST_VERSIONS`
-    // #[tokio::test]
-    // async fn setup_repos() {
-    //     for version in TEST_VERSIONS {
-    //         let version_file = format!("test/spigot/{}.json", version);
-    //         let version_file = Path::new(&version_file);
-    //         let contents = read(version_file).unwrap();
-    //         let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
-    //
-    //         let test_path = Path::new("test/build");
-    //
-    //         setup_repositories(test_path, &parsed)
-    //             .await
-    //             .unwrap();
-    //
-    //         let build_data = Path::new("test/build/build_data");
-    //         test_build_data(build_data, version);
-    //     }
-    // }
-    //
-    // #[tokio::test]
-    // async fn setup_first_repo() {
-    //     let version = TEST_VERSIONS[0];
-    //     let version_file = format!("test/spigot/{}.json", version);
-    //     let version_file = Path::new(&version_file);
-    //     let contents = read(version_file).unwrap();
-    //     let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
-    //     let test_path = Path::new("test/build");
-    //     setup_repositories(test_path, &parsed)
-    //         .await
-    //         .unwrap();
-    //     let build_data = Path::new("test/build/build_data");
-    //     test_build_data(build_data, version);
-    // }
-    //
-    // #[tokio::test]
-    // async fn setup_latest() {
-    //     let version = "latest";
-    //     let version_file = format!("test/spigot/{}.json", version);
-    //     let version_file = Path::new(&version_file);
-    //     let contents = read(version_file).unwrap();
-    //     let parsed = serde_json::from_slice::<SpigotVersion>(&contents).unwrap();
-    //     let test_path = Path::new("test/build");
-    //     setup_repositories(test_path, &parsed)
-    //         .await
-    //         .unwrap();
-    //     let build_data = Path::new("test/build/build_data");
-    //     test_build_data(build_data, version);
-    // }
+    /// Sets up the local repositories with data from the latest
+    /// version of the game.
+    #[tokio::test]
+    async fn setup_latest() {
+        let version = TEST_VERSIONS[11];
+        setup_repo(version).await;
+    }
+
+    /// Sets up the repositories and downloads the data for the
+    /// provided version
+    async fn setup_repo(version: &str) {
+        let spigot_version = get_version_test(version)
+            .await
+            .unwrap();
+        let test_path = Path::new("test/build");
+        setup_repositories(test_path, &spigot_version)
+            .await
+            .unwrap();
+        let build_data = Path::new("test/build/build_data");
+        test_build_data(build_data, version).await;
+    }
 
     /// Tests the build data cloned from the https://hub.spigotmc.org/stash/scm/spigot/builddata.git
     /// repo and ensures that the information in the info.json is both parsable and correct.
     /// (i.e. No files are missing)
-    fn test_build_data(path: &Path, version: &str) {
+    async fn test_build_data(path: &Path, version: &str) {
         // Path to info file.
         let info = {
             let path = path.join("info.json");
-            let data = read(path).unwrap();
+            let data = read(path).await.unwrap();
             serde_json::from_slice::<BuildDataInfo>(&data).unwrap()
         };
 

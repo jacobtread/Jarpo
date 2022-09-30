@@ -5,7 +5,7 @@ use crate::utils::cmd::transfer_logging_output;
 use crate::utils::constants::{MAVEN_DOWNLOAD_URL, MAVEN_VERSION};
 use crate::utils::net::create_reqwest;
 use crate::utils::zip::{unzip, ZipError};
-use log::{debug, error, info, warn};
+use log::{debug, info};
 use std::env::current_dir;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -19,7 +19,6 @@ pub enum MavenError {
     Zip(ZipError),
     Request(reqwest::Error),
     IO(io::Error),
-    PathProblem,
 }
 
 define_from_value! {

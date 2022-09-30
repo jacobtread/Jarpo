@@ -18,7 +18,7 @@ impl HashType {
                 result.eq(hash)
             }
             HashType::SHA1 => {
-                let mut hasher = Sha1::from(data);
+                let hasher = Sha1::from(data);
                 let result = hasher.digest().to_string();
                 result.eq(hash)
             }

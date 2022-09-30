@@ -1,11 +1,4 @@
-use bimap::BiMap;
 use hashcow::CowHashMap;
-use log::info;
-use std::collections::HashMap;
-use std::ffi::OsStr;
-use std::hash::Hash;
-use std::path::PathBuf;
-use tokio::process::Command;
 
 /// Cow HashMaps are used for holding mappings because the mojang mappings
 /// are modified so they become owned strings but the bukkit mappings are
@@ -131,7 +124,7 @@ impl<'a> Mapper<'a> {
     /// Loads the mojang mappings into the `mojang_2_obf` map
     fn load_mojang(mojang: &str, out: &mut CowMapping) {
         for line in mojang.lines() {
-            /// Line formatted like (net.minecraft.Util$5 -> ad$4:)
+            // Line formatted like (net.minecraft.Util$5 -> ad$4:)
             if !line.ends_with(':') {
                 continue;
             }

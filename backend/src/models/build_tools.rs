@@ -1,5 +1,4 @@
 use crate::utils::hash::HashType;
-use log::info;
 use regex::Regex;
 use serde::Deserialize;
 

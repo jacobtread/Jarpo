@@ -6,7 +6,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use std::io;
 use std::path::Path;
-use tokio::fs::write;
+use tokio::fs::{read, write};
 
 /// Structure for version details response from
 /// https://hub.spigotmc.org/versions/{VERSION}.json
@@ -43,18 +43,22 @@ pub enum SpigotError {
     UnknownVersion,
     Request(reqwest::Error),
     IO(io::Error),
+    SerdeError(serde_json::Error),
 }
 
 define_from_value! {
     SpigotError {
         Request = reqwest::Error,
         IO = io::Error,
+        SerdeError = serde_json::Error,
     }
 }
 
+type SpigotResult<T> = Result<T, SpigotError>;
+
 /// Retrieves a spigot version JSON from `SPIGOT_VERSION_URL` and parses it
 /// returning the result or a SpigotError
-pub async fn get_version(version: &str) -> Result<SpigotVersion, SpigotError> {
+pub async fn get_version(version: &str) -> SpigotResult<SpigotVersion> {
     let client = create_reqwest()?;
     let url = format!("{}{}.json", SPIGOT_VERSIONS_URL, version);
     let response = client.get(url).send().await?;
@@ -67,9 +71,28 @@ pub async fn get_version(version: &str) -> Result<SpigotVersion, SpigotError> {
     Ok(version)
 }
 
+/// Loads a spigot version stored locally at the provided path
+pub async fn get_version_local(path: impl AsRef<Path>) -> SpigotResult<SpigotVersion> {
+    let contents = read(path).await?;
+    let parsed = serde_json::from_slice::<SpigotVersion>(&contents)?;
+    Ok(parsed)
+}
+
+/// Attempts to get the provided version for use in tests. Checks if the
+/// file exists locally and downloads it if it doesn't
+#[cfg(test)]
+pub async fn get_version_test(version: &str) -> SpigotResult<SpigotVersion> {
+    let file_name = format!("test/spigot/{}.json", version);
+    let file = Path::new(&file_name);
+    if !file.exists() {
+        download_version(&file, version).await?;
+    }
+    get_version_local(file).await
+}
+
 /// Downloads the provided version and saves it as {VERSION}.json in
 /// the provided path.
-pub async fn download_version(path: &Path, version: &str) -> Result<(), SpigotError> {
+pub async fn download_version(path: &Path, version: &str) -> SpigotResult<()> {
     let file_name = format!("{}.json", version);
     let file_path = path.join(&file_name);
     let url = format!("{}{}", SPIGOT_VERSIONS_URL, file_name);
@@ -94,7 +117,7 @@ pub async fn download_version(path: &Path, version: &str) -> Result<(), SpigotEr
 /// others are in a different format (e.g. 1023, 1021) when looking
 /// in the 1.8.json, 1.9.json files you will see that the name is in
 /// the 1023, 1021 format which are identical files to the other one.
-pub async fn scrape_versions() -> Result<Vec<String>, SpigotError> {
+pub async fn scrape_versions() -> SpigotResult<Vec<String>> {
     let client = create_reqwest()?;
     let response = client
         .get(SPIGOT_VERSIONS_URL)
@@ -113,16 +136,13 @@ pub async fn scrape_versions() -> Result<Vec<String>, SpigotError> {
 }
 
 #[cfg(test)]
-mod test {
-    use crate::build_tools::spigot::{download_version, scrape_versions, SpigotError};
-    use crate::utils::constants::SPIGOT_VERSIONS_URL;
-    use crate::utils::net::create_reqwest;
+pub(crate) mod test {
+    use crate::build_tools::spigot::{download_version, get_version_local, scrape_versions};
     use futures::future::try_join_all;
     use std::path::Path;
-    use tokio::fs::{create_dir, write};
-    use tokio::task::JoinHandle;
+    use tokio::fs::create_dir;
 
-    const TEST_VERSIONS: [&str; 12] = [
+    pub const TEST_VERSIONS: [&str; 12] = [
         "1.8", "1.9", "1.10.2", "1.11", "1.12", "1.13", "1.14", "1.16.1", "1.17", "1.18", "1.19",
         "latest",
     ];
@@ -149,6 +169,27 @@ mod test {
         }
         let futures = TEST_VERSIONS
             .map(|version| tokio::spawn(async { download_version(root_path, version) }));
+        let _ = try_join_all(futures)
+            .await
+            .unwrap();
+    }
+
+    /// Tests all the locally stored spigot versions present in
+    /// test/spigot parsing them ensuring they are parsable
+    #[tokio::test]
+    async fn test_local_versions() {
+        let root_path = Path::new("test/spigot");
+        if !root_path.exists() || !root_path.is_dir() {
+            return;
+        }
+        let futures = TEST_VERSIONS
+            .into_iter()
+            .map(|version| {
+                let file_name = format!("test/spigot/{}.json", version);
+                root_path.join(file_name)
+            })
+            .filter(|path| path.exists())
+            .map(|path| get_version_local(path));
         let _ = try_join_all(futures)
             .await
             .unwrap();

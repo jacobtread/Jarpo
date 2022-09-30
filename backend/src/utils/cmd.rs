@@ -8,7 +8,6 @@ use tokio::process::Command;
 #[derive(Debug)]
 pub enum CommandError {
     IO(io::Error),
-    ParsingFailure,
     MissingCommand,
 }
 

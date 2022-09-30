@@ -1,18 +1,18 @@
 use crate::define_from_value;
-use std::fs::File;
-use std::fs::{create_dir_all, remove_dir_all, remove_file};
-use std::io;
-use std::io::copy;
+use crate::utils::files::{delete_existing, ensure_parent_exists, move_file};
+use async_zip::error::ZipError as ZipErrorInternal;
+use async_zip::read::fs::ZipFileReader;
+use async_zip::write::{EntryOptions, ZipFileWriter};
+use std::fmt::Debug;
 use std::path::{Path, PathBuf};
-use tokio::task::{spawn_blocking, JoinError};
-use zip::result::ZipError as ZipErrorInternal;
-use zip::ZipArchive;
+use tokio::fs::{create_dir_all, File};
+use tokio::io;
+use tokio::io::copy;
 
 #[derive(Debug)]
 pub enum ZipError {
     MissingFile,
     IO(io::Error),
-    JoinError(JoinError),
     ZipError(ZipErrorInternal),
 }
 
@@ -20,54 +20,114 @@ define_from_value! {
     ZipError {
         IO = io::Error,
         ZipError = ZipErrorInternal,
-        JoinError = JoinError,
     }
+}
+
+type ZipResult<T> = Result<T, ZipError>;
+
+/// Removes files that match the provided names from the
+/// zip at the provided path. Copies all the contents of
+/// the provided `input` zip file to the `output` path
+/// but excluding any file / directory names specified
+/// in `files`
+pub async fn remove_from_zip(
+    input: impl AsRef<Path> + Debug,
+    output: impl AsRef<Path> + Debug,
+    files: &[&str],
+) -> Result<(), ZipError> {
+    let input = input.as_ref();
+    let output = output.as_ref();
+
+    if !input.exists() {
+        return Err(ZipError::MissingFile);
+    }
+    delete_existing(output).await?;
+    {
+        let zip = ZipFileReader::new(input).await?;
+        let out_file = File::create(output).await?;
+        let mut out_zip = ZipFileWriter::new(out_file);
+        let entries = zip.entries();
+
+        for i in 0..entries.len() {
+            let entry = &entries[i];
+            let name = entry.name();
+
+            // Skip ignored entries
+            if files.contains(&name) {
+                continue;
+            }
+
+            let options = EntryOptions::new(name.to_string(), entry.compression().clone());
+            if entry.dir() {
+                out_zip
+                    .write_entry_whole(options, &[])
+                    .await?;
+            } else {
+                let mut stream = out_zip
+                    .write_entry_stream(options)
+                    .await?;
+                let mut reader = zip.entry_reader(i).await?;
+                copy(&mut reader, &mut stream).await?;
+                stream.close().await?;
+            }
+        }
+        out_zip.close().await?;
+    }
+
+    if output.exists() {
+        move_file(output, input).await?;
+    }
+    Ok(())
+}
+
+/// Extracts the file with the provided name from the zip at `input`
+/// and writes the contents to `output`
+pub async fn extract_file(input: &PathBuf, output: &PathBuf, file_name: &str) -> ZipResult<bool> {
+    delete_existing(output).await?;
+    let zip = ZipFileReader::new(input).await?;
+    let entries = zip.entries();
+    for i in 0..entries.len() {
+        let entry = &entries[i];
+        if entry.name() == file_name {
+            if entry.dir() {
+                return Ok(false);
+            }
+            ensure_parent_exists(&output).await?;
+            let mut reader = zip.entry_reader(i).await?;
+            let mut out_file = File::create(output).await?;
+            copy(&mut reader, &mut out_file).await?;
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 /// Unzips the zip at the `input` path and extracts its contents to the
 /// `output` directory. Will return ZipError::Missing file if the input
 /// file does not exist.
-pub async fn unzip(input: &PathBuf, output: &PathBuf) -> Result<(), ZipError> {
-    let input = input.to_owned();
-    let output = output.to_owned();
 
+pub async fn unzip(input: &PathBuf, output: &PathBuf) -> ZipResult<()> {
     if !input.exists() {
         return Err(ZipError::MissingFile);
     }
 
-    spawn_blocking(move || {
-        let input = &input;
-        let output = &output;
-        let file = File::open(input)?;
-        let mut archive = ZipArchive::new(file)?;
+    let zip = ZipFileReader::new(input).await?;
+    let entries = zip.entries();
 
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)?;
-            let out_path = match file.enclosed_name() {
-                Some(path) => output.join(path),
-                None => continue,
-            };
-            if file.is_dir() {
-                create_dir_all(out_path)?;
-            } else {
-                if let Some(parent) = out_path.parent() {
-                    if !parent.exists() {
-                        create_dir_all(parent)?;
-                    }
-                }
-                if out_path.exists() {
-                    if out_path.is_dir() {
-                        remove_dir_all(&out_path)?;
-                    } else {
-                        remove_file(&out_path)?;
-                    }
-                }
-                let mut out_file = File::create(&out_path)?;
-                copy(&mut file, &mut out_file)?;
-            }
+    for i in 0..entries.len() {
+        let entry = &entries[i];
+        let out_path = output.join(entry.name());
+        delete_existing(&out_path).await?;
+        if entry.dir() {
+            create_dir_all(out_path).await?;
+        } else {
+            ensure_parent_exists(&out_path).await?;
+            let mut reader = zip.entry_reader(i).await?;
+            let mut out_file = File::open(out_path).await?;
+            copy(&mut reader, &mut out_file).await?;
         }
+    }
 
-        Ok(())
-    })
-    .await?
+    Ok(())
 }

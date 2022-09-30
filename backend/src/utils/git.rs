@@ -1,12 +1,12 @@
 use crate::build_tools::spigot::{SpigotVersion, VersionRefs};
 use crate::define_from_value;
-use git2::{Object, ObjectType, Oid, Repository, ResetType};
+use git2::{ObjectType, Oid, Repository, ResetType};
 use log::info;
-use std::fmt::{Display, Formatter, Write};
+use std::fmt::{Display, Formatter};
 use std::fs::remove_dir_all;
 use std::io;
 use std::path::{Path, PathBuf};
-use tokio::task::{spawn_blocking, JoinError, JoinHandle};
+use tokio::task::{spawn_blocking, JoinError};
 use tokio::try_join;
 
 #[derive(Debug)]

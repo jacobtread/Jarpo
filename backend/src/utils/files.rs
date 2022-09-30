@@ -1,23 +1,7 @@
-use std::borrow::Cow;
 use std::io;
 use std::path::Path;
-use tokio::fs::{create_dir_all, read, remove_dir_all, remove_file};
-
-/// Checks if the provided path is a directory and will
-/// remove it if its not.
-pub async fn ensure_is_dir(path: impl AsRef<Path>) -> io::Result<bool> {
-    let path = path.as_ref();
-    Ok(if path.exists() {
-        if path.is_dir() {
-            true
-        } else {
-            remove_file(path).await?;
-            false
-        }
-    } else {
-        false
-    })
-}
+use tokio::fs::{create_dir_all, remove_dir_all, remove_file, File};
+use tokio::io::copy;
 
 /// Checks if the provided path is a file and will
 /// remove it if its not.
@@ -46,5 +30,43 @@ pub async fn ensure_dir_exists(path: impl AsRef<Path>) -> io::Result<()> {
     } else {
         create_dir_all(path).await?;
     }
+    Ok(())
+}
+
+/// Ensures the the parent directory for the provided path
+/// exists and creates it if its missing.
+pub async fn ensure_parent_exists(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            create_dir_all(parent).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Will delete existing files / directories at the provided path
+pub async fn delete_existing(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    if path.exists() {
+        if path.is_file() {
+            remove_file(path).await?;
+        } else {
+            remove_dir_all(path).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Moves the file at the provided path to the other provided
+/// path. Deleting the existing file at `to` if one exists.
+pub async fn move_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
+    let from = from.as_ref();
+    let to = to.as_ref();
+    delete_existing(to).await?;
+    let mut input = File::open(from).await?;
+    let mut output = File::create(to).await?;
+    copy(&mut input, &mut output).await?;
+    delete_existing(from).await?;
     Ok(())
 }
