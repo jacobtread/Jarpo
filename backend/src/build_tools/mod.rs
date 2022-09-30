@@ -13,6 +13,7 @@ use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
 use futures::future::TryFutureExt;
 use log::{info, warn};
+use std::env::current_dir;
 use std::io;
 use std::io::{copy, Cursor, Read, Write};
 use std::path::{Path, PathBuf, StripPrefixError};
@@ -95,7 +96,6 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
 
     info!("Preparing vanilla jar");
     let jar_path = prepare_vanilla_jar(build_path, &build_info).await?;
-    let jar_path = jar_path.strip_prefix(&build_path)?;
 
     // TODO: Remove jar signature. Possible to do later?
     remove_embed_signature(build_path, &jar_path);
@@ -124,6 +124,25 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
     Ok(())
 }
 
+fn replace_dir_names(value: &str) -> String {
+    let mut out: String = value.to_string();
+
+    if out.contains("BuildData") {
+        out = out.replace("BuildData", "build/build_data")
+    }
+    if out.contains("Bukkit") {
+        out = out.replace("CraftBukkit", "build/craftbukkit")
+    }
+    if out.contains("Spigot") {
+        out = out.replace("Spigot", "build/spigot")
+    }
+    if out.contains("Bukkit") {
+        out = out.replace("Bukkit", "build/bukkit")
+    }
+
+    out
+}
+
 async fn apply_special_source(
     context: &Context<'_>,
     m_paths: MappingsPaths,
@@ -142,13 +161,17 @@ async fn apply_special_source(
     let cm_command = bd_info
         .class_map_command
         .as_ref()
-        .map(|value| value.to_string())
+        .map(|value| replace_dir_names(value))
         .unwrap_or_else(|| {
-            String::from("java -jar BuildData/bin/SpecialSource-2.jar map -i {0} -m {1} -o {2}")
+            String::from(
+                "java -jar build/build_data/bin/SpecialSource-2.jar map -i {0} -m {1} -o {2}",
+            )
         });
 
+    let current_dir = current_dir()?;
+
     execute_command(
-        context.build_path,
+        &current_dir,
         &cm_command,
         &[
             &context
@@ -194,7 +217,7 @@ async fn create_mappings(
     let bd_info = context.build_info;
     let bd_path = context
         .build_path
-        .join("BuildData");
+        .join("build_data");
 
     let mappings_path = bd_path.join("mappings");
     ensure_dir_exists(&mappings_path).await?;
@@ -306,7 +329,7 @@ async fn create_mappings(
 
 /// Loads the build_data info configuration
 async fn get_build_info(path: &Path) -> BuildResult<BuildDataInfo> {
-    let info_path = path.join("BuildData/info.json");
+    let info_path = path.join("build_data/info.json");
     if !info_path.exists() {
         return Err(BuildToolsError::MissingBuildInfo);
     }
