@@ -148,6 +148,7 @@ async fn apply_special_source(
     m_paths: MappingsPaths,
     mappings_hash: &str,
 ) -> BuildResult<()> {
+    let current_dir = current_dir()?;
     let work_path = context.work_path;
 
     let clm_jar = format!("mappings.{mappings_hash}.jar-cl");
@@ -167,9 +168,7 @@ async fn apply_special_source(
                 "java -jar build/build_data/bin/SpecialSource-2.jar map -i {0} -m {1} -o {2}",
             )
         });
-
-    let current_dir = current_dir()?;
-
+    info!("Applying class mappings");
     execute_command(
         &current_dir,
         &cm_command,
@@ -181,6 +180,63 @@ async fn apply_special_source(
                 .cm_path
                 .to_string_lossy(),
             &clm_jar.to_string_lossy(),
+        ],
+    )
+    .await?;
+
+    if let Some(mm_path) = &m_paths.mm_path {
+        let mm_command = bd_info
+            .class_map_command
+            .as_ref()
+            .map(|value| replace_dir_names(value))
+            .unwrap_or_else(|| {
+                String::from(
+                    "java -jar build/build_data/bin/SpecialSource-2.jar map -i {0} -m {1} -o {2}",
+                )
+            });
+
+        info!("Applying member mappings");
+        execute_command(
+            &current_dir,
+            &mm_command,
+            &[
+                &clm_jar.to_string_lossy(),
+                &mm_path.to_string_lossy(),
+                &mm_jar.to_string_lossy(),
+            ],
+        )
+        .await?;
+    }
+
+    let fm_command = bd_info
+        .final_map_command
+        .as_ref()
+        .map(|value| replace_dir_names(value))
+        .unwrap_or_else(|| {
+            String::from(
+                "java -jar build/build_data/bin/SpecialSource.jar --kill-lvt -i {0} --access-transformer {1} -m {2} -o {3}",
+            )
+        });
+
+    let final_mappings = if let Some(package_mappings) = &bd_info.package_mappings {
+        format!("build/build_data/mappings/{}", package_mappings)
+    } else {
+        m_paths
+            .fm_path
+            .to_string_lossy()
+            .to_string()
+    };
+    info!("Applying final mappings");
+    execute_command(
+        &current_dir,
+        &fm_command,
+        &[
+            &mm_jar.to_string_lossy(),
+            &format!("build/build_data/mappings/{}", bd_info.access_transforms),
+            &final_mappings,
+            &m_paths
+                .fm_jar
+                .to_string_lossy(),
         ],
     )
     .await?;
@@ -197,6 +253,8 @@ struct MappingsPaths {
     mm_path: Option<PathBuf>,
     /// Field mappings path
     fm_path: PathBuf,
+    /// Final mapped jar path
+    fm_jar: PathBuf,
 }
 
 async fn create_mappings(
@@ -324,6 +382,7 @@ async fn create_mappings(
         cm_path,
         mm_path,
         fm_path,
+        fm_jar,
     }))
 }
 
