@@ -11,11 +11,11 @@ use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
 use crate::utils::zip::{extract_file, remove_from_zip, unzip_filtered, ZipError};
 use futures::future::TryFutureExt;
-use log::{info, warn};
+use log::{error, info, warn};
 use std::env::current_dir;
 use std::io;
 use std::path::{Path, PathBuf, StripPrefixError};
-use tokio::fs::{create_dir_all, read, write};
+use tokio::fs::{create_dir_all, read, remove_dir, symlink_dir, write};
 use tokio::try_join;
 
 mod mapping;
@@ -164,6 +164,14 @@ async fn decompile(context: &Context<'_>) -> BuildResult<()> {
         )
         .await?;
     }
+    let latest_link = work_path.join("decompile-latest");
+    if latest_link.exists() {
+        remove_dir(&latest_link).await?;
+    }
+    if let Err(err) = symlink_dir(&decomp_path, &latest_link).await {
+        warn!("Unable to create symlink to latest decompile: {err}")
+    }
+
     Ok(())
 }
 

@@ -3,7 +3,6 @@ use crate::utils::files::{delete_existing, ensure_parent_exists, move_file};
 use async_zip::error::ZipError as ZipErrorInternal;
 use async_zip::read::fs::ZipFileReader;
 use async_zip::write::{EntryOptions, ZipFileWriter};
-use log::info;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use tokio::fs::{create_dir_all, File};
