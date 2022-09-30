@@ -119,14 +119,23 @@ pub fn transfer_logging_output(output_in: &Output) {
         Some((level, text))
     }
 
+    let mut error_output = false;
+
     for line in output.lines() {
         let (level, text) = match get_line_parts(line) {
             Some(value) => value,
             None => {
                 if line.contains("Error") {
                     error!("{line}");
+                } else if line.starts_with("Exception in thread") {
+                    error!("{line}");
+                    error_output = true;
                 } else {
-                    info!("{line}");
+                    if error_output {
+                        error!("{line}");
+                    } else {
+                        info!("{line}");
+                    }
                 }
                 continue;
             }
