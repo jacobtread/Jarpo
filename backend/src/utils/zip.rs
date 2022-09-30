@@ -3,6 +3,7 @@ use crate::utils::files::{delete_existing, ensure_parent_exists, move_file};
 use async_zip::error::ZipError as ZipErrorInternal;
 use async_zip::read::fs::ZipFileReader;
 use async_zip::write::{EntryOptions, ZipFileWriter};
+use log::info;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use tokio::fs::{create_dir_all, File};
@@ -106,7 +107,6 @@ pub async fn extract_file(input: &PathBuf, output: &PathBuf, file_name: &str) ->
 /// Unzips the zip at the `input` path and extracts its contents to the
 /// `output` directory. Will return ZipError::Missing file if the input
 /// file does not exist.
-
 pub async fn unzip(input: &PathBuf, output: &PathBuf) -> ZipResult<()> {
     if !input.exists() {
         return Err(ZipError::MissingFile);
@@ -124,8 +124,46 @@ pub async fn unzip(input: &PathBuf, output: &PathBuf) -> ZipResult<()> {
         } else {
             ensure_parent_exists(&out_path).await?;
             let mut reader = zip.entry_reader(i).await?;
-            let mut out_file = File::open(out_path).await?;
+            let mut out_file = File::create(out_path).await?;
             copy(&mut reader, &mut out_file).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Unzips the zip at the `input` path and extracts its contents to the
+/// `output` directory. Will return ZipError::Missing file if the input
+/// file does not exist. Will only unzip files when their names return
+/// yes in the filer function
+pub async fn unzip_filtered<F: Fn(&str) -> bool>(
+    input: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    filter: F,
+) -> ZipResult<()> {
+    if !input.as_ref().exists() {
+        return Err(ZipError::MissingFile);
+    }
+
+    let output = output.as_ref();
+
+    let zip = ZipFileReader::new(input).await?;
+    let entries = zip.entries();
+
+    for i in 0..entries.len() {
+        let entry = &entries[i];
+        let name = entry.name();
+        if filter(name) {
+            let out_path = output.join(name);
+            delete_existing(&out_path).await?;
+            if entry.dir() {
+                create_dir_all(out_path).await?;
+            } else {
+                ensure_parent_exists(&out_path).await?;
+                let mut reader = zip.entry_reader(i).await?;
+                let mut out_file = File::create(out_path).await?;
+                copy(&mut reader, &mut out_file).await?;
+            }
         }
     }
 

@@ -9,13 +9,13 @@ use crate::utils::files::{delete_existing, ensure_dir_exists, ensure_is_file};
 use crate::utils::git::{setup_repositories, RepoError};
 use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
-use crate::utils::zip::{extract_file, remove_from_zip, ZipError};
+use crate::utils::zip::{extract_file, remove_from_zip, unzip_filtered, ZipError};
 use futures::future::TryFutureExt;
 use log::{info, warn};
 use std::env::current_dir;
 use std::io;
 use std::path::{Path, PathBuf, StripPrefixError};
-use tokio::fs::{read, write};
+use tokio::fs::{create_dir_all, read, write};
 use tokio::try_join;
 
 mod mapping;
@@ -60,6 +60,8 @@ pub struct Context<'a> {
     work_path: &'a PathBuf,
     maven: MavenContext<'a>,
     vanilla_jar: &'a Path,
+    mappings_hash: &'a str,
+    fm_jar: &'a Path,
 }
 
 pub async fn run_build_tools(version: &str) -> BuildResult<()> {
@@ -94,6 +96,10 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
     let work_path = build_path.join("work");
     ensure_dir_exists(&work_path).await?;
 
+    // Final mapped jar name & path
+    let fm_jar = format!("mapping.{mappings_hash}.jar");
+    let fm_jar = work_path.join(fm_jar);
+
     let context = Context {
         build_info: &build_info,
         build_path,
@@ -104,13 +110,60 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
             script_path: maven_path,
         },
         vanilla_jar: &jar_path,
+        fm_jar: &fm_jar,
+        mappings_hash: &mappings_hash,
     };
 
-    let m_paths = create_mappings(&context, &mappings_hash).await?;
-    if let Some(m_paths) = m_paths {
-        apply_special_source(&context, m_paths, &mappings_hash).await?;
+    if ensure_is_file(&fm_jar).await? {
+        info!("Final mapped jar already exists.. Skipping");
+    } else {
+        let m_paths = create_mappings(&context).await?;
+        if let Some(m_paths) = m_paths {
+            apply_special_source(&context, m_paths).await?;
+        }
     }
 
+    context
+        .maven
+        .install_jar(&fm_jar, context.build_info)
+        .await?;
+
+    info!("Decompiling jar");
+
+    decompile(&context).await?;
+
+    Ok(())
+}
+
+async fn decompile(context: &Context<'_>) -> BuildResult<()> {
+    let work_path = context.work_path;
+    let decomp_path = format!("decompile-{}", context.mappings_hash);
+    let decomp_path = work_path.join(&decomp_path);
+    if !decomp_path.exists() {
+        create_dir_all(&decomp_path).await?;
+        let class_dir = decomp_path.join("classes");
+        unzip_filtered(context.fm_jar, &class_dir, |name| {
+            name.starts_with("net/minecraft")
+        })
+        .await?;
+        let bd_info = context.build_info;
+        let current_dir = current_dir()?;
+        let decomp_command = bd_info
+            .decompile_command
+            .as_ref()
+            .map(|value| replace_dir_names(value))
+            .unwrap_or_else(|| {
+                String::from(
+                    "java -jar build/build_data/bin/fernflower.jar -dgs=1 -hdc=0 -rbr=0 -asc=1 -udv=0 {0} {1}",
+                )
+            });
+        execute_command(
+            &current_dir,
+            &decomp_command,
+            &[&class_dir.to_string_lossy(), &decomp_path.to_string_lossy()],
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -133,12 +186,9 @@ fn replace_dir_names(value: &str) -> String {
     out
 }
 
-async fn apply_special_source(
-    context: &Context<'_>,
-    m_paths: MappingsPaths,
-    mappings_hash: &str,
-) -> BuildResult<()> {
+async fn apply_special_source(context: &Context<'_>, m_paths: MappingsPaths) -> BuildResult<()> {
     info!("Applying special source");
+    let mappings_hash = context.mappings_hash;
     let current_dir = current_dir()?;
     let work_path = context.work_path;
 
@@ -225,7 +275,7 @@ async fn apply_special_source(
             &mm_jar.to_string_lossy(),
             &format!("build/build_data/mappings/{}", bd_info.access_transforms),
             &final_mappings,
-            &m_paths
+            &context
                 .fm_jar
                 .to_string_lossy(),
         ],
@@ -244,25 +294,11 @@ struct MappingsPaths {
     mm_path: Option<PathBuf>,
     /// Field mappings path
     fm_path: PathBuf,
-    /// Final mapped jar path
-    fm_jar: PathBuf,
 }
 
-async fn create_mappings(
-    context: &Context<'_>,
-    mappings_hash: &str,
-) -> BuildResult<Option<MappingsPaths>> {
+async fn create_mappings(context: &Context<'_>) -> BuildResult<Option<MappingsPaths>> {
     info!("Setting up mappings");
     let work_path = context.work_path;
-    // Final mapped jar name & path
-    let fm_jar = format!("mapping.{mappings_hash}.jar");
-    let fm_jar = work_path.join(fm_jar);
-
-    if ensure_is_file(&fm_jar).await? {
-        info!("Final mapped jar already exists.. Skipping");
-        return Ok(None);
-    }
-
     let bd_info = context.build_info;
     let bd_path = context
         .build_path
@@ -288,7 +324,7 @@ async fn create_mappings(
         });
 
     // Field mappings name & path
-    let fm_path = format!("bukkit-{mappings_hash}-fields.csrg");
+    let fm_path = format!("bukkit-{}-fields.csrg", context.mappings_hash);
     let fm_path = work_path.join(fm_path);
 
     if let Some(mappings_url) = &bd_info.mappings_url {
@@ -308,7 +344,7 @@ async fn create_mappings(
             let mojang_mappings = read(&mojang_path).await?;
             let mojang_mappings = String::from_utf8_lossy(&mojang_mappings);
             if mm_path.is_none() {
-                let out_path = format!("bukkit-{mappings_hash}-members.csrg");
+                let out_path = format!("bukkit-{}-members.csrg", context.mappings_hash);
                 let out_path = work_path.join(out_path);
                 let output = mapper.make_csrg(mojang_mappings.as_ref(), true);
                 write(&out_path, output).await?;
@@ -334,7 +370,7 @@ async fn create_mappings(
                 .install_file(&fm_path, "csrg", "maps-spigot-fields")
                 .await?;
 
-            let comb_path = format!("bukkit-{mappings_hash}-combined.csrg");
+            let comb_path = format!("bukkit-{}-combined.csrg", context.mappings_hash);
             let comb_path = work_path.join(comb_path);
 
             if !ensure_is_file(&comb_path).await? {
@@ -365,7 +401,6 @@ async fn create_mappings(
         cm_path,
         mm_path,
         fm_path,
-        fm_jar,
     }))
 }
 

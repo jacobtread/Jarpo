@@ -147,4 +147,29 @@ impl<'a> MavenContext<'a> {
         )
         .await
     }
+
+    pub async fn install_jar(
+        &self,
+        file: &PathBuf,
+        bd_info: &BuildDataInfo,
+    ) -> Result<ExitStatus, MavenError> {
+        let working_dir = current_dir()?;
+        let version_arg = if let Some(spigot_version) = &self.build_info.spigot_version {
+            spigot_version.clone()
+        } else {
+            format!("{}-SNAPSHOT", bd_info.minecraft_version)
+        };
+        self.execute(
+            working_dir,
+            &[
+                "install:install-file",
+                &format!("-Dfile={}", file.to_string_lossy()),
+                "-Dpackaging=jar",
+                "-DgroupId=org.spigotmc",
+                "-DartifactId=minecraft-server",
+                &format!("-Dversion={}", version_arg),
+            ],
+        )
+        .await
+    }
 }
