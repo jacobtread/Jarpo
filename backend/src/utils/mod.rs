@@ -1,3 +1,4 @@
+pub(crate) mod cmd;
 pub(crate) mod constants;
 pub(crate) mod files;
 pub(crate) mod git;

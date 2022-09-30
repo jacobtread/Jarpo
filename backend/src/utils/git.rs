@@ -163,15 +163,15 @@ impl Repo {
 pub async fn setup_repositories(path: &Path, version: &SpigotVersion) -> Result<String, RepoError> {
     let refs = &version.refs;
     info!(
-        "Setting up repositories in \"{}\" (build_data, bukkit, spigot)",
+        "Setting up repositories in \"{}\" (BuildData, Spigot, Bukkit, CraftBukkit)",
         path.to_string_lossy()
     );
 
     let (build_data_repo, _, _, _) = try_join!(
-        Repo::BuildData.setup(refs, path.join("build_data")),
-        Repo::Spigot.setup(refs, path.join("spigot")),
-        Repo::Bukkit.setup(refs, path.join("bukkit")),
-        Repo::CraftBukkit.setup(refs, path.join("craftbukkit"))
+        Repo::BuildData.setup(refs, path.join("BuildData")),
+        Repo::Spigot.setup(refs, path.join("Spigot")),
+        Repo::Bukkit.setup(refs, path.join("Bukkit")),
+        Repo::CraftBukkit.setup(refs, path.join("CraftBukkit"))
     )?;
 
     info!("Repositories successfully setup");

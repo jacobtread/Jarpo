@@ -1,6 +1,7 @@
 use crate::build_tools::spigot::SpigotVersion;
 use crate::define_from_value;
 use crate::models::build_tools::BuildDataInfo;
+use crate::utils::cmd::transfer_logging_output;
 use crate::utils::constants::{MAVEN_DOWNLOAD_URL, MAVEN_VERSION};
 use crate::utils::net::create_reqwest;
 use crate::utils::zip::{unzip, ZipError};
@@ -115,16 +116,7 @@ impl<'a> MavenContext<'a> {
         command.args(new_args);
         let output = command.output().await?;
 
-        if output.status.success() {
-            Self::transfer_logging_output(&output.stdout, false);
-        } else {
-            let stderr = output.stderr;
-            if stderr.is_empty() {
-                Self::transfer_logging_output(&output.stdout, true);
-            } else {
-                Self::transfer_logging_output(&stderr, true);
-            }
-        }
+        transfer_logging_output(&output);
 
         Ok(output.status)
     }
@@ -155,52 +147,5 @@ impl<'a> MavenContext<'a> {
             ],
         )
         .await
-    }
-
-    /// Transfers the logging output from a process and transfers it into
-    /// the logging functions for this application.
-    ///
-    /// `output` is the logging output as UTF-8 bytes
-    /// `default_error` determines whether unknown logging levels
-    ///                 will fall back to info or error
-    fn transfer_logging_output(output: &[u8], default_error: bool) {
-        let output = String::from_utf8_lossy(output);
-
-        /// Function for parsing the string and providing its
-        /// individual parts (format: `[LEVEL] TEXT`) splits
-        /// this into two string slices (LEVEL, TEXT). Will
-        /// return None if unable to parse.
-        fn get_line_parts(line: &str) -> Option<(&str, &str)> {
-            let start = line.find('[')?;
-            let end = line.find(']')?;
-            if end <= start {
-                return None;
-            }
-            let level = &line[start + 1..end - 1];
-            let text = &line[end + 1..];
-            Some((level, text))
-        }
-
-        for line in output.lines() {
-            let (level, text) = match get_line_parts(line) {
-                Some(value) => value,
-                None => {
-                    info!("{line}");
-                    continue;
-                }
-            };
-
-            match level {
-                "WARN" => warn!("{text}"),
-                "FATAL" | "ERROR" => error!("{text}"),
-                _ => {
-                    if default_error {
-                        error!("{text}");
-                    } else {
-                        info!("{text}");
-                    }
-                }
-            }
-        }
     }
 }

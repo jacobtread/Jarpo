@@ -3,6 +3,7 @@ use crate::build_tools::maven::{MavenContext, MavenError};
 use crate::build_tools::spigot::{SpigotError, SpigotVersion};
 use crate::define_from_value;
 use crate::models::build_tools::BuildDataInfo;
+use crate::utils::cmd::{execute_command, CommandError};
 use crate::utils::constants::{
     MAVEN_DOWNLOAD_URL, MAVEN_VERSION, PARODY_BUILD_TOOLS_VERSION, SPIGOT_VERSIONS_URL, USER_AGENT,
 };
@@ -14,7 +15,7 @@ use futures::future::TryFutureExt;
 use log::{info, warn};
 use std::io;
 use std::io::{copy, Cursor, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, StripPrefixError};
 use tokio::fs::{create_dir, create_dir_all, read, remove_dir_all, remove_file, write, File};
 use tokio::io::AsyncWriteExt;
 use tokio::task::{spawn_blocking, JoinError, JoinHandle};
@@ -24,6 +25,8 @@ use zip::result::ZipError;
 mod mapping;
 mod maven;
 pub(crate) mod spigot;
+
+type BuildResult<T> = Result<T, BuildToolsError>;
 
 #[derive(Debug)]
 pub enum BuildToolsError {
@@ -38,6 +41,8 @@ pub enum BuildToolsError {
     Join(JoinError),
     Zip(ZipError),
     Network(NetworkError),
+    Command(CommandError),
+    StripPrefix(StripPrefixError),
 }
 
 define_from_value! {
@@ -51,6 +56,8 @@ define_from_value! {
         Join = JoinError,
         Zip = ZipError,
         Network = NetworkError,
+        Command = CommandError,
+        StripPrefix = StripPrefixError,
     }
 }
 
@@ -60,9 +67,10 @@ pub struct Context<'a> {
     build_path: &'a Path,
     work_path: &'a PathBuf,
     maven: MavenContext<'a>,
+    vanilla_jar: &'a Path,
 }
 
-pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
+pub async fn run_build_tools(version: &str) -> BuildResult<()> {
     let spigot_version = spigot::get_version(version).await?;
     let build_path = Path::new("build");
     ensure_dir_exists(build_path).await?;
@@ -87,6 +95,7 @@ pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
 
     info!("Preparing vanilla jar");
     let jar_path = prepare_vanilla_jar(build_path, &build_info).await?;
+    let jar_path = jar_path.strip_prefix(&build_path)?;
 
     // TODO: Remove jar signature. Possible to do later?
     remove_embed_signature(build_path, &jar_path);
@@ -104,18 +113,74 @@ pub async fn run_build_tools(version: &str) -> Result<(), BuildToolsError> {
             build_info: &build_info,
             script_path: maven_path,
         },
+        vanilla_jar: &jar_path,
     };
 
-    create_mappings(&context, &jar_path, &mappings_hash).await?;
+    let m_paths = create_mappings(&context, &jar_path, &mappings_hash).await?;
+    if let Some(m_paths) = m_paths {
+        apply_special_source(&context, m_paths, &mappings_hash).await?;
+    }
 
     Ok(())
 }
 
+async fn apply_special_source(
+    context: &Context<'_>,
+    m_paths: MappingsPaths,
+    mappings_hash: &str,
+) -> BuildResult<()> {
+    let work_path = context.work_path;
+
+    let clm_jar = format!("mappings.{mappings_hash}.jar-cl");
+    let clm_jar = work_path.join(clm_jar);
+
+    let mm_jar = format!("mappings.{mappings_hash}.jar-m");
+    let mm_jar = work_path.join(mm_jar);
+
+    let bd_info = context.build_info;
+
+    let cm_command = bd_info
+        .class_map_command
+        .as_ref()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| {
+            String::from("java -jar BuildData/bin/SpecialSource-2.jar map -i {0} -m {1} -o {2}")
+        });
+
+    execute_command(
+        context.build_path,
+        &cm_command,
+        &[
+            &context
+                .vanilla_jar
+                .to_string_lossy(),
+            &m_paths
+                .cm_path
+                .to_string_lossy(),
+            &clm_jar.to_string_lossy(),
+        ],
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Structure for storing the mappings paths returned from
+/// `create_mappings`
+struct MappingsPaths {
+    /// Class mappings path
+    cm_path: PathBuf,
+    /// Member mappings path
+    mm_path: Option<PathBuf>,
+    /// Field mappings path
+    fm_path: PathBuf,
+}
+
 async fn create_mappings(
     context: &Context<'_>,
-    jar_path: &PathBuf,
+    jar_path: &Path,
     mappings_hash: &str,
-) -> Result<(), BuildToolsError> {
+) -> BuildResult<Option<MappingsPaths>> {
     let work_path = context.work_path;
     // Final mapped jar name & path
     let fm_jar = format!("mapping.{mappings_hash}.jar");
@@ -123,13 +188,13 @@ async fn create_mappings(
 
     if ensure_is_file(&fm_jar).await? {
         info!("Final mapped jar already exists.. Skipping");
-        return Ok(());
+        return Ok(None);
     }
 
     let bd_info = context.build_info;
     let bd_path = context
         .build_path
-        .join("build_data");
+        .join("BuildData");
 
     let mappings_path = bd_path.join("mappings");
     ensure_dir_exists(&mappings_path).await?;
@@ -232,12 +297,16 @@ async fn create_mappings(
             .await?;
     }
 
-    Ok(())
+    Ok(Some(MappingsPaths {
+        cm_path,
+        mm_path,
+        fm_path,
+    }))
 }
 
 /// Loads the build_data info configuration
-async fn get_build_info(path: &Path) -> Result<BuildDataInfo, BuildToolsError> {
-    let info_path = path.join("build_data/info.json");
+async fn get_build_info(path: &Path) -> BuildResult<BuildDataInfo> {
+    let info_path = path.join("BuildData/info.json");
     if !info_path.exists() {
         return Err(BuildToolsError::MissingBuildInfo);
     }
@@ -251,10 +320,7 @@ async fn get_build_info(path: &Path) -> Result<BuildDataInfo, BuildToolsError> {
 /// - Downloads jar if missing or different hash
 /// - Extracts the inner embedded jar if present
 /// - Returns the path for the vanilla jar (embedded or not)
-async fn prepare_vanilla_jar(
-    root: &Path,
-    info: &BuildDataInfo,
-) -> Result<PathBuf, BuildToolsError> {
+async fn prepare_vanilla_jar(root: &Path, info: &BuildDataInfo) -> BuildResult<PathBuf> {
     let jar_name = format!("minecraft_server.{}.jar", info.minecraft_version);
     let jar_path = root.join(&jar_name);
     let jar_exists = jar_path.exists();
@@ -312,7 +378,7 @@ async fn extract_embedded(
     path: &PathBuf,
     embedded_path: &PathBuf,
     info: &BuildDataInfo,
-) -> Result<ExtractType, BuildToolsError> {
+) -> BuildResult<ExtractType> {
     use std::fs::{read, write, File};
 
     let file = File::open(path);
@@ -360,7 +426,7 @@ async fn extract_embedded(
 ///
 /// TODO: It might be possible to move this forward to the decompile
 /// TODO: step rather than doing it early on here.
-fn remove_embed_signature(_path: &Path, _jar_path: &PathBuf) {}
+fn remove_embed_signature(_path: &Path, _jar_path: &Path) {}
 
 /// Checks whether the locally stored server jar hash matches the one
 /// that we are trying to build. If the hashes don't match or the jar
@@ -383,7 +449,7 @@ async fn check_vanilla_jar(path: &Path, info: &BuildDataInfo) -> bool {
 
 /// Downloads the vanilla server jar and stores it at
 /// the provided path
-async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) -> Result<(), BuildToolsError> {
+async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) -> BuildResult<()> {
     let url = info.get_download_url();
     let bytes = reqwest::get(url)
         .await?
