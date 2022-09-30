@@ -1,6 +1,6 @@
 use std::io;
 use std::path::Path;
-use tokio::fs::{create_dir_all, remove_dir_all, remove_file, File};
+use tokio::fs::{create_dir_all, remove_dir_all, remove_file, rename, File};
 use tokio::io::copy;
 
 /// Checks if the provided path is a file and will
@@ -59,14 +59,20 @@ pub async fn delete_existing(path: impl AsRef<Path>) -> io::Result<()> {
 }
 
 /// Moves the file at the provided path to the other provided
-/// path. Deleting the existing file at `to` if one exists.
+/// path.
 pub async fn move_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
     let from = from.as_ref();
     let to = to.as_ref();
-    delete_existing(to).await?;
-    let mut input = File::open(from).await?;
-    let mut output = File::create(to).await?;
-    copy(&mut input, &mut output).await?;
-    delete_existing(from).await?;
+    rename(from, to).await?;
+    Ok(())
+}
+
+/// Moves the directory at the provided path to the other
+/// provided path. Deleting any existing files/directories.
+pub async fn move_directory(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
+    let from = from.as_ref();
+    let to = to.as_ref();
+    delete_existing(&to).await?;
+    rename(from, to);
     Ok(())
 }

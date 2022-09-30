@@ -5,17 +5,22 @@ use crate::define_from_value;
 use crate::models::build_tools::BuildDataInfo;
 use crate::utils::cmd::{execute_command, CommandError};
 use crate::utils::constants::PARODY_BUILD_TOOLS_VERSION;
-use crate::utils::files::{delete_existing, ensure_dir_exists, ensure_is_file};
+use crate::utils::files::{delete_existing, ensure_dir_exists, ensure_is_file, move_directory};
 use crate::utils::git::{setup_repositories, RepoError};
 use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
 use crate::utils::zip::{extract_file, remove_from_zip, unzip_filtered, ZipError};
 use futures::future::TryFutureExt;
+use futures::FutureExt;
 use log::{error, info, warn};
+use patch::Patch;
 use std::env::current_dir;
+use std::fs::FileType;
 use std::io;
 use std::path::{Path, PathBuf, StripPrefixError};
-use tokio::fs::{create_dir_all, read, remove_dir, symlink_dir, write};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::fs::{create_dir_all, read, read_dir, remove_dir, symlink_dir, write};
+use tokio::task::spawn_blocking;
 use tokio::try_join;
 
 mod mapping;
@@ -37,6 +42,7 @@ pub enum BuildToolsError {
     Network(NetworkError),
     Command(CommandError),
     StripPrefix(StripPrefixError),
+    PatchJoin,
 }
 
 define_from_value! {
@@ -274,50 +280,6 @@ async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) -> BuildResult<
         .bytes()
         .await?;
     write(path, bytes).await?;
-    Ok(())
-}
-
-/// Decompiles the jar source dumping it into the decompile-HASH directory
-/// will skip decompiling if the decompile directory exists
-async fn decompile(context: &Context<'_>) -> BuildResult<()> {
-    let work_path = context.work_path;
-    let decomp_path = format!("decompile-{}", context.mappings_hash);
-    let decomp_path = work_path.join(&decomp_path);
-    if !decomp_path.exists() {
-        info!("Starting Decompile");
-        create_dir_all(&decomp_path).await?;
-        let class_dir = decomp_path.join("classes");
-        unzip_filtered(context.fm_jar, &class_dir, |name| {
-            name.starts_with("net/minecraft")
-        })
-        .await?;
-        let bd_info = context.build_info;
-        let current_dir = current_dir()?;
-        let decomp_command = bd_info
-            .decompile_command
-            .as_ref()
-            .map(|value| replace_dir_names(value))
-            .unwrap_or_else(|| {
-                String::from(
-                    "java -jar build/build_data/bin/fernflower.jar -dgs=1 -hdc=0 -rbr=0 -asc=1 -udv=0 {0} {1}",
-                )
-            });
-        execute_command(
-            &current_dir,
-            &decomp_command,
-            &[&class_dir.to_string_lossy(), &decomp_path.to_string_lossy()],
-        )
-        .await?;
-        info!("Decompile complete")
-    }
-    let latest_link = work_path.join("decompile-latest");
-    if latest_link.exists() {
-        remove_dir(&latest_link).await?;
-    }
-    if let Err(err) = symlink_dir(&decomp_path, &latest_link).await {
-        warn!("Unable to create symlink to latest decompile: {err}")
-    }
-
     Ok(())
 }
 
@@ -559,6 +521,101 @@ async fn create_mappings(context: &Context<'_>) -> BuildResult<Option<MappingsPa
         mm_path,
         fm_path,
     }))
+}
+
+/// Decompiles the jar source dumping it into the decompile-HASH directory
+/// will skip decompiling if the decompile directory exists
+async fn decompile(context: &Context<'_>) -> BuildResult<()> {
+    let work_path = context.work_path;
+    let decomp_path = format!("decompile-{}", context.mappings_hash);
+    let decomp_path = work_path.join(&decomp_path);
+    if !decomp_path.exists() {
+        info!("Starting Decompile");
+        create_dir_all(&decomp_path).await?;
+        let class_dir = decomp_path.join("classes");
+        unzip_filtered(context.fm_jar, &class_dir, |name| {
+            name.starts_with("net/minecraft")
+        })
+        .await?;
+        let bd_info = context.build_info;
+        let current_dir = current_dir()?;
+        let decomp_command = bd_info
+            .decompile_command
+            .as_ref()
+            .map(|value| replace_dir_names(value))
+            .unwrap_or_else(|| {
+                String::from(
+                    "java -jar build/build_data/bin/fernflower.jar -dgs=1 -hdc=0 -rbr=0 -asc=1 -udv=0 {0} {1}",
+                )
+            });
+        execute_command(
+            &current_dir,
+            &decomp_command,
+            &[&class_dir.to_string_lossy(), &decomp_path.to_string_lossy()],
+        )
+        .await?;
+        info!("Decompile complete")
+    }
+    let latest_link = work_path.join("decompile-latest");
+    if latest_link.exists() {
+        remove_dir(&latest_link).await?;
+    }
+    if let Err(err) = symlink_dir(&decomp_path, &latest_link).await {
+        warn!("Unable to create symlink to latest decompile: {err}")
+    }
+
+    Ok(())
+}
+
+/// Applies the CraftBukkit patches from craftbukkit/nms-patches to the
+/// decompiled sources
+async fn apply_cb_patches(context: &Context<'_>) -> BuildResult<()> {
+    let build_path = context.build_path;
+    let work_path = context.work_path;
+
+    // CraftBukkit repo path
+    let cb_path = build_path.join("craftbukkit");
+    let nms_path = cb_path.join("src/main/java/net");
+    if nms_path.exists() {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_millis(0))
+            .as_millis();
+        let move_target = format!("nms.old.{}", timestamp);
+        let move_target = work_path.join(&move_target);
+        move_directory(&nms_path, &move_target).await?;
+    }
+
+    let patch_path = cb_path.join("nms-patches");
+    spawn_blocking(move || {
+        apply_cb_patch_recursive(context, patch_path)?;
+    })
+    .await
+    .map_err(|_| BuildToolsError::PatchJoin)?;
+    Ok(())
+}
+
+fn apply_cb_patch_recursive(context: &Context<'_>, current: PathBuf) -> BuildResult<()> {
+    use std::fs::{read, read_dir};
+
+    let current = current;
+    let rd = read_dir(&current)?;
+
+    for entry in rd {
+        let entry = entry?;
+        let name = entry.file_name();
+        let ftype = entry.file_type()?;
+        let file_path = current.join(name.to_string_lossy());
+        if ftype.is_dir() {
+            apply_cb_patch_recursive(context, file_path)?;
+        } else {
+            let patch = read(file_path)?;
+            let patch = String::from_utf8_lossy(&patch);
+            let patch = Patch::from_single(patch.as_ref()).unwrap();
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
