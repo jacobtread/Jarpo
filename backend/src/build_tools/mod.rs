@@ -128,18 +128,163 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
         .install_jar(&fm_jar, context.build_info)
         .await?;
 
-    info!("Decompiling jar");
-
     decompile(&context).await?;
 
     Ok(())
 }
 
+/// Loads the build_data info configuration
+async fn get_build_info(path: &Path) -> BuildResult<BuildDataInfo> {
+    let info_path = path.join("build_data/info.json");
+    if !info_path.exists() {
+        return Err(BuildToolsError::MissingBuildInfo);
+    }
+    let info_data = read(info_path).await?;
+    let parsed = serde_json::from_slice::<BuildDataInfo>(&info_data)?;
+    Ok(parsed)
+}
+
+/// Prepares the vanilla jar for decompiling and patching.
+/// - Checks the hashes of existing jars
+/// - Downloads jar if missing or different hash
+/// - Extracts the inner embedded jar if present
+/// - Returns the path for the vanilla jar (embedded or not)
+async fn prepare_vanilla_jar(root: &Path, info: &BuildDataInfo) -> BuildResult<PathBuf> {
+    let jar_name = format!("minecraft_server.{}.jar", info.minecraft_version);
+    let jar_path = root.join(&jar_name);
+    let jar_exists = jar_path.exists();
+
+    if !jar_exists || !check_vanilla_jar(&jar_path, info).await {
+        if jar_exists {
+            info!(
+                "Local hash for jar at \"{}\" didn't match. Re-downloading jar.",
+                jar_path.to_string_lossy()
+            );
+        } else {
+            info!("Downloading vanilla jar...")
+        }
+        download_vanilla_jar(&jar_path, info).await?
+    } else {
+        info!("Existing jar already matches hash. Skipping.")
+    }
+
+    let embedded_path = {
+        let embedded_name = format!("embedded_server.{}.jar", info.minecraft_version);
+        root.join(embedded_name)
+    };
+
+    let embedded = extract_embedded(&jar_path, &embedded_path, info).await?;
+
+    let path = match embedded {
+        ExtractType::Cached => {
+            info!("Already extracted embedded jar with matching hash. Skipping.");
+            embedded_path
+        }
+        ExtractType::Done => {
+            info!("Extracted embedded server jar");
+            embedded_path
+        }
+        _ => jar_path,
+    };
+
+    Ok(path)
+}
+
+/// Result action from extracting the embed. Cached means the hash of
+/// the embedded value matches the existing jar, Done means extracted
+/// and None means there was no embedded Jar
+#[derive(Debug)]
+enum ExtractType {
+    Cached,
+    Done,
+    None,
+}
+
+/// Attempts to extract the embedded jar from `path` to `embedded_path` but will
+/// return whether or not one existed.
+async fn extract_embedded(
+    jar_path: &PathBuf,
+    embedded_path: &PathBuf,
+    info: &BuildDataInfo,
+) -> BuildResult<ExtractType> {
+    let embedded_path = embedded_path.clone();
+
+    let embedded_zip_path = format!(
+        "META-INF/versions/{0}/server-{0}.jar",
+        info.minecraft_version
+    );
+
+    if ensure_is_file(&embedded_path).await? {
+        if let Some(mc_hash) = &info.minecraft_hash {
+            let existing = read(&embedded_path).await?;
+            if HashType::SHA256.is_match(mc_hash, existing) {
+                info!("Already extracted embedded jar with matching hash. Skipping.");
+                return Ok(ExtractType::Cached);
+            }
+        }
+    }
+    let existed = extract_file(jar_path, &embedded_path, &embedded_zip_path).await?;
+    Ok(if existed {
+        ExtractType::Done
+    } else {
+        ExtractType::None
+    })
+}
+
+/// Removes the MOJANGCS.RSA and MOJANGCS.SF from the jar file or
+/// else they wont function.
+async fn remove_embed_signature(path: &Path, jar_path: &Path) -> BuildResult<()> {
+    info!("Removing signature from jar");
+    let tmp = path.join("tmp-extract.jar");
+    delete_existing(&tmp).await?;
+    remove_from_zip(
+        jar_path,
+        &tmp,
+        &["META-INF/MOJANGCS.RSA", "META-INF/MOJANGCS.SF"],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Checks whether the locally stored server jar hash matches the one
+/// that we are trying to build. If the hashes don't match or the jar
+/// simply doesn't exist then false is returned
+async fn check_vanilla_jar(path: &Path, info: &BuildDataInfo) -> bool {
+    if let Some((hash_type, hash)) = info.get_server_hash() {
+        if !path.exists() {
+            return false;
+        }
+
+        if let Ok(jar_bytes) = read(path).await {
+            hash_type.is_match(hash, jar_bytes)
+        } else {
+            false
+        }
+    } else {
+        path.exists()
+    }
+}
+
+/// Downloads the vanilla server jar and stores it at
+/// the provided path
+async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) -> BuildResult<()> {
+    let url = info.get_download_url();
+    let bytes = reqwest::get(url)
+        .await?
+        .bytes()
+        .await?;
+    write(path, bytes).await?;
+    Ok(())
+}
+
+/// Decompiles the jar source dumping it into the decompile-HASH directory
+/// will skip decompiling if the decompile directory exists
 async fn decompile(context: &Context<'_>) -> BuildResult<()> {
     let work_path = context.work_path;
     let decomp_path = format!("decompile-{}", context.mappings_hash);
     let decomp_path = work_path.join(&decomp_path);
     if !decomp_path.exists() {
+        info!("Starting Decompile");
         create_dir_all(&decomp_path).await?;
         let class_dir = decomp_path.join("classes");
         unzip_filtered(context.fm_jar, &class_dir, |name| {
@@ -163,6 +308,7 @@ async fn decompile(context: &Context<'_>) -> BuildResult<()> {
             &[&class_dir.to_string_lossy(), &decomp_path.to_string_lossy()],
         )
         .await?;
+        info!("Decompile complete")
     }
     let latest_link = work_path.join("decompile-latest");
     if latest_link.exists() {
@@ -175,6 +321,8 @@ async fn decompile(context: &Context<'_>) -> BuildResult<()> {
     Ok(())
 }
 
+/// Replaces directory names that are normally for the Spigot build tools
+/// app with the names for this projects directory structure
 fn replace_dir_names(value: &str) -> String {
     let mut out: String = value.to_string();
 
@@ -194,6 +342,7 @@ fn replace_dir_names(value: &str) -> String {
     out
 }
 
+/// Applies the special source renaming to the jars
 async fn apply_special_source(context: &Context<'_>, m_paths: MappingsPaths) -> BuildResult<()> {
     info!("Applying special source");
     let mappings_hash = context.mappings_hash;
@@ -410,150 +559,6 @@ async fn create_mappings(context: &Context<'_>) -> BuildResult<Option<MappingsPa
         mm_path,
         fm_path,
     }))
-}
-
-/// Loads the build_data info configuration
-async fn get_build_info(path: &Path) -> BuildResult<BuildDataInfo> {
-    let info_path = path.join("build_data/info.json");
-    if !info_path.exists() {
-        return Err(BuildToolsError::MissingBuildInfo);
-    }
-    let info_data = read(info_path).await?;
-    let parsed = serde_json::from_slice::<BuildDataInfo>(&info_data)?;
-    Ok(parsed)
-}
-
-/// Prepares the vanilla jar for decompiling and patching.
-/// - Checks the hashes of existing jars
-/// - Downloads jar if missing or different hash
-/// - Extracts the inner embedded jar if present
-/// - Returns the path for the vanilla jar (embedded or not)
-async fn prepare_vanilla_jar(root: &Path, info: &BuildDataInfo) -> BuildResult<PathBuf> {
-    let jar_name = format!("minecraft_server.{}.jar", info.minecraft_version);
-    let jar_path = root.join(&jar_name);
-    let jar_exists = jar_path.exists();
-
-    if !jar_exists || !check_vanilla_jar(&jar_path, info).await {
-        if jar_exists {
-            info!(
-                "Local hash for jar at \"{}\" didn't match. Re-downloading jar.",
-                jar_path.to_string_lossy()
-            );
-        } else {
-            info!("Downloading vanilla jar...")
-        }
-        download_vanilla_jar(&jar_path, info).await?
-    } else {
-        info!("Existing jar already matches hash. Skipping.")
-    }
-
-    let embedded_path = {
-        let embedded_name = format!("embedded_server.{}.jar", info.minecraft_version);
-        root.join(embedded_name)
-    };
-
-    let embedded = extract_embedded(&jar_path, &embedded_path, info).await?;
-
-    let path = match embedded {
-        ExtractType::Cached => {
-            info!("Already extracted embedded jar with matching hash. Skipping.");
-            embedded_path
-        }
-        ExtractType::Done => {
-            info!("Extracted embedded server jar");
-            embedded_path
-        }
-        _ => jar_path,
-    };
-
-    Ok(path)
-}
-
-/// Result action from extracting the embed. Cached means the hash of
-/// the embedded value matches the existing jar, Done means extracted
-/// and None means there was no embedded Jar
-#[derive(Debug)]
-enum ExtractType {
-    Cached,
-    Done,
-    None,
-}
-
-/// Attempts to extract the embedded jar from `path` to `embedded_path` but will
-/// return whether or not one existed.
-async fn extract_embedded(
-    jar_path: &PathBuf,
-    embedded_path: &PathBuf,
-    info: &BuildDataInfo,
-) -> BuildResult<ExtractType> {
-    let embedded_path = embedded_path.clone();
-
-    let embedded_zip_path = format!(
-        "META-INF/versions/{0}/server-{0}.jar",
-        info.minecraft_version
-    );
-
-    if ensure_is_file(&embedded_path).await? {
-        if let Some(mc_hash) = &info.minecraft_hash {
-            let existing = read(&embedded_path).await?;
-            if HashType::SHA256.is_match(mc_hash, existing) {
-                info!("Already extracted embedded jar with matching hash. Skipping.");
-                return Ok(ExtractType::Cached);
-            }
-        }
-    }
-    let existed = extract_file(jar_path, &embedded_path, &embedded_zip_path).await?;
-    Ok(if existed {
-        ExtractType::Done
-    } else {
-        ExtractType::None
-    })
-}
-
-/// Removes the MOJANGCS.RSA and MOJANGCS.SF from the jar file or
-/// else they wont function.
-async fn remove_embed_signature(path: &Path, jar_path: &Path) -> BuildResult<()> {
-    info!("Removing signature from jar");
-    let tmp = path.join("tmp-extract.jar");
-    delete_existing(&tmp).await?;
-    remove_from_zip(
-        jar_path,
-        &tmp,
-        &["META-INF/MOJANGCS.RSA", "META-INF/MOJANGCS.SF"],
-    )
-    .await?;
-    Ok(())
-}
-
-/// Checks whether the locally stored server jar hash matches the one
-/// that we are trying to build. If the hashes don't match or the jar
-/// simply doesn't exist then false is returned
-async fn check_vanilla_jar(path: &Path, info: &BuildDataInfo) -> bool {
-    if let Some((hash_type, hash)) = info.get_server_hash() {
-        if !path.exists() {
-            return false;
-        }
-
-        if let Ok(jar_bytes) = read(path).await {
-            hash_type.is_match(hash, jar_bytes)
-        } else {
-            false
-        }
-    } else {
-        path.exists()
-    }
-}
-
-/// Downloads the vanilla server jar and stores it at
-/// the provided path
-async fn download_vanilla_jar(path: &Path, info: &BuildDataInfo) -> BuildResult<()> {
-    let url = info.get_download_url();
-    let bytes = reqwest::get(url)
-        .await?
-        .bytes()
-        .await?;
-    write(path, bytes).await?;
-    Ok(())
 }
 
 #[cfg(test)]
