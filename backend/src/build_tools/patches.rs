@@ -1,10 +1,11 @@
 use async_walkdir::WalkDir;
 use futures::StreamExt;
 use log::{info, warn};
-use patch::Patch;
-use std::fs::read;
+use patch::{Line, ParseError, Patch};
+use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 use std::{io, path::Path};
+use tokio::fs::{read, write};
 use tokio::task::{spawn_blocking, JoinError};
 
 use crate::define_from_value;
@@ -12,23 +13,32 @@ use crate::define_from_value;
 #[derive(Debug)]
 pub enum PatchError {
     IO(io::Error),
-    Join(JoinError),
-    Parse,
     MissingFile(PathBuf),
-    InvalidFile,
+    InvalidPath,
+    Invalid,
 }
 
 define_from_value! {
   PatchError {
     IO = io::Error,
-    Join = JoinError,
   }
+}
+impl Display for PatchError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PatchError::IO(err) => write!(f, "IO Error Occurred: {err:?}"),
+            PatchError::MissingFile(err) => write!(f, "Unable to find corresponding file: {err:?}"),
+            PatchError::InvalidPath => write!(f, "Patch target file path name was invalid"),
+            _ => write!(f, "Failed patch"),
+        }
+    }
 }
 
 type PatchResult<T> = Result<T, PatchError>;
 
 pub async fn apply_patches(patches: PathBuf, target: PathBuf) -> PatchResult<()> {
-    let mut count: usize = 0;
+    // The number of patches applied
+    let mut count = 0usize;
     let mut walk = WalkDir::new(patches);
     while let Some(entry) = walk.next().await {
         let entry = entry?;
@@ -38,7 +48,33 @@ pub async fn apply_patches(patches: PathBuf, target: PathBuf) -> PatchResult<()>
             .as_ref()
             .ends_with(".patch")
         {
-            count += 1;
+            let patch_path = entry.path();
+            let contents = match read(&patch_path).await {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("Unable to apply patch at {patch_path:?} (Unable to read file)");
+                    continue;
+                }
+            };
+            let contents = String::from_utf8_lossy(&contents);
+            let contents = contents.replace("\r\n", "\n");
+            let patch = match Patch::from_single(&contents) {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!("Unable to apply patch at {patch_path:?} (Unable to parse patch file):\n{err:?}");
+                    continue;
+                }
+            };
+
+            match apply_patch(patch, &target).await {
+                Ok(_) => {
+                    info!("Applied patch at {patch_path:?}");
+                    count += 1;
+                }
+                Err(err) => {
+                    warn!("Unable to apply patch at {patch_path:?}");
+                }
+            }
         }
     }
 
@@ -47,55 +83,13 @@ pub async fn apply_patches(patches: PathBuf, target: PathBuf) -> PatchResult<()>
     Ok(())
 }
 
-fn apply_patches_for(current: PathBuf, target: &PathBuf) -> PatchResult<()> {
-    use std::fs::{read, read_dir};
-
-    let current = current;
-    let rd = read_dir(&current)?;
-
-    let mut count = 0;
-
-    for entry in rd {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let ftype = entry.file_type()?;
-        let file_path = current.join(name.as_ref());
-        if ftype.is_dir() {
-            apply_patches_for(file_path, target)?;
-        } else {
-            if !name
-                .as_ref()
-                .ends_with(".patch")
-            {
-                continue;
-            }
-
-            count += 1;
-
-            let patch = read(&file_path)?;
-            let patch = String::from_utf8_lossy(&patch).replace("\r\n", "\n");
-            let patch = Patch::from_single(&patch).unwrap();
-            let old_file = &patch.old.path;
-            let file_path = &old_file[2..];
-            let target_path = target.join(file_path);
-            match apply_patch(patch, &target) {
-                Ok(_) => {}
-                Err(err) => {}
-            }
-        }
+async fn apply_patch(patch: Patch<'_>, target_path: &PathBuf) -> PatchResult<()> {
+    // Path formated like a/net/minecraft
+    let old_path = patch.old.path.as_ref();
+    if old_path.len() <= 2 {
+        return Err(PatchError::InvalidPath);
     }
-
-    info!("Dir at {current:?} found {count} patches");
-
-    Ok(())
-}
-
-fn apply_patch(patch: Patch, target_path: &PathBuf) -> PatchResult<()> {
-    let old_path = &patch.old.path;
-    if old_path.len() < 3 {
-        return Err(PatchError::InvalidFile);
-    }
+    // Remove a/ prefix
     let old_path = &old_path[2..];
     let path = target_path.join(old_path);
 
@@ -103,7 +97,70 @@ fn apply_patch(patch: Patch, target_path: &PathBuf) -> PatchResult<()> {
         return Err(PatchError::MissingFile(path));
     }
 
+    let contents = read(&path).await?;
+    let contents = String::from_utf8_lossy(&contents);
+    let mut lines = contents
+        .lines()
+        .collect::<Vec<&str>>();
+    let lines_len = lines.len();
+
+    let hunks = &patch.hunks;
+
+    let mut removed: usize = 0;
+    let mut added: usize = 0;
+
+    for hunk in hunks {
+        let start = (hunk.old_range.start as usize) - 1;
+        let count = (hunk.old_range.count as usize) - 1;
+        if start > lines_len {
+            warn!("Hunk bounds outside file length: (Got: {start}, Length: {lines_len})");
+            return Err(PatchError::Invalid);
+        }
+        let hunk_lines = &hunk.lines;
+        if !check_context(start.clone(), hunk_lines, &lines) {
+            warn!("Hunk context did not match");
+            return Err(PatchError::Invalid);
+        }
+
+        let mut line_num = start;
+        for line in hunk_lines {
+            match line {
+                Line::Add(value) => {
+                    lines.insert(line_num, *value);
+                    line_num += 1;
+                }
+                Line::Remove(value) => {
+                    lines.remove(line_num);
+                    line_num -= 1;
+                }
+                Line::Context(_) => {
+                    line_num += 1;
+                }
+            }
+        }
+    }
+
+    let out = lines.join("\n");
+
+    write(path, out).await?;
     Ok(())
+}
+
+fn check_context(start: usize, hunk_lines: &Vec<Line>, lines: &Vec<&str>) -> bool {
+    let mut line_num = start;
+    for line in hunk_lines {
+        let value = match line {
+            Line::Remove(value) => value,
+            Line::Context(value) => value,
+            Line::Add(_) => continue,
+        };
+        let line_at = lines[line_num];
+        if !line_at.eq(*value) {
+            return false;
+        }
+        line_num += 1;
+    }
+    return true;
 }
 
 #[cfg(test)]
