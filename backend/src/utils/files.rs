@@ -1,7 +1,6 @@
 use std::io;
 use std::path::Path;
-use tokio::fs::{create_dir_all, remove_dir_all, remove_file, rename, File};
-use tokio::io::copy;
+use tokio::fs::{create_dir_all, remove_dir_all, remove_file, rename};
 
 /// Checks if the provided path is a file and will
 /// remove it if its not.
@@ -73,6 +72,6 @@ pub async fn move_directory(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io:
     let from = from.as_ref();
     let to = to.as_ref();
     delete_existing(&to).await?;
-    rename(from, to);
+    rename(from, to).await?;
     Ok(())
 }

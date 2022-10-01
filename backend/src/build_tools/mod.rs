@@ -11,20 +11,19 @@ use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
 use crate::utils::zip::{extract_file, remove_from_zip, unzip_filtered, ZipError};
 use futures::future::TryFutureExt;
-use futures::FutureExt;
-use log::{error, info, warn};
+use log::{info, warn};
 use patch::Patch;
 use std::env::current_dir;
-use std::fs::FileType;
 use std::io;
 use std::path::{Path, PathBuf, StripPrefixError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::fs::{create_dir_all, read, read_dir, remove_dir, symlink_dir, write};
+use tokio::fs::{create_dir_all, read, remove_dir, symlink_dir, write};
 use tokio::task::spawn_blocking;
 use tokio::try_join;
 
 mod mapping;
 mod maven;
+mod patches;
 pub(crate) mod spigot;
 
 type BuildResult<T> = Result<T, BuildToolsError>;
@@ -42,7 +41,7 @@ pub enum BuildToolsError {
     Network(NetworkError),
     Command(CommandError),
     StripPrefix(StripPrefixError),
-    PatchJoin,
+    Patch(patches::PatchError),
 }
 
 define_from_value! {
@@ -57,6 +56,7 @@ define_from_value! {
         Network = NetworkError,
         Command = CommandError,
         StripPrefix = StripPrefixError,
+        Patch = patches::PatchError,
     }
 }
 
@@ -134,7 +134,9 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
         .install_jar(&fm_jar, context.build_info)
         .await?;
 
-    decompile(&context).await?;
+    let decomp_path = decompile(&context).await?;
+
+    apply_cb_patches(&context, &decomp_path).await?;
 
     Ok(())
 }
@@ -525,7 +527,7 @@ async fn create_mappings(context: &Context<'_>) -> BuildResult<Option<MappingsPa
 
 /// Decompiles the jar source dumping it into the decompile-HASH directory
 /// will skip decompiling if the decompile directory exists
-async fn decompile(context: &Context<'_>) -> BuildResult<()> {
+async fn decompile(context: &Context<'_>) -> BuildResult<PathBuf> {
     let work_path = context.work_path;
     let decomp_path = format!("decompile-{}", context.mappings_hash);
     let decomp_path = work_path.join(&decomp_path);
@@ -564,12 +566,12 @@ async fn decompile(context: &Context<'_>) -> BuildResult<()> {
         warn!("Unable to create symlink to latest decompile: {err}")
     }
 
-    Ok(())
+    Ok(decomp_path)
 }
 
 /// Applies the CraftBukkit patches from craftbukkit/nms-patches to the
 /// decompiled sources
-async fn apply_cb_patches(context: &Context<'_>) -> BuildResult<()> {
+async fn apply_cb_patches(context: &Context<'_>, decomp_path: &PathBuf) -> BuildResult<()> {
     let build_path = context.build_path;
     let work_path = context.work_path;
 
@@ -587,15 +589,12 @@ async fn apply_cb_patches(context: &Context<'_>) -> BuildResult<()> {
     }
 
     let patch_path = cb_path.join("nms-patches");
-    spawn_blocking(move || {
-        apply_cb_patch_recursive(context, patch_path)?;
-    })
-    .await
-    .map_err(|_| BuildToolsError::PatchJoin)?;
+
+    patches::apply_patches(patch_path, decomp_path.clone()).await?;
     Ok(())
 }
 
-fn apply_cb_patch_recursive(context: &Context<'_>, current: PathBuf) -> BuildResult<()> {
+fn apply_cb_patch_recursive(current: PathBuf) -> BuildResult<()> {
     use std::fs::{read, read_dir};
 
     let current = current;
@@ -605,12 +604,16 @@ fn apply_cb_patch_recursive(context: &Context<'_>, current: PathBuf) -> BuildRes
         let entry = entry?;
         let name = entry.file_name();
         let ftype = entry.file_type()?;
-        let file_path = current.join(name.to_string_lossy());
+        let file_path = current.join(
+            name.to_string_lossy()
+                .as_ref(),
+        );
         if ftype.is_dir() {
-            apply_cb_patch_recursive(context, file_path)?;
+            apply_cb_patch_recursive(file_path)?;
         } else {
-            let patch = read(file_path)?;
+            let patch = read(&file_path)?;
             let patch = String::from_utf8_lossy(&patch);
+            info!("Loading patch {file_path:?}");
             let patch = Patch::from_single(patch.as_ref()).unwrap();
         }
     }
