@@ -1,12 +1,11 @@
 use async_walkdir::WalkDir;
 use futures::StreamExt;
 use log::{info, warn};
-use patch::{Line, ParseError, Patch};
+use patch::{Line, Patch};
 use std::fmt::{Display, Formatter};
+use std::io;
 use std::path::PathBuf;
-use std::{io, path::Path};
 use tokio::fs::{create_dir_all, read, write};
-use tokio::task::{spawn_blocking, JoinError};
 
 use crate::define_from_value;
 
@@ -56,7 +55,7 @@ pub async fn apply_patches(
             let contents = match read(&patch_path).await {
                 Ok(value) => value,
                 Err(err) => {
-                    warn!("Unable to apply patch at {patch_path:?} (Unable to read file)");
+                    warn!("Unable to apply patch at {patch_path:?} (Unable to read file): {err}");
                     continue;
                 }
             };
@@ -76,7 +75,7 @@ pub async fn apply_patches(
                     count += 1;
                 }
                 Err(err) => {
-                    warn!("Unable to apply patch at {patch_path:?}");
+                    warn!("Unable to apply patch at {patch_path:?}: {err}");
                 }
             }
         }
@@ -114,9 +113,6 @@ async fn apply_patch(
 
     let hunks = &patch.hunks;
 
-    let mut removed: usize = 0;
-    let mut added: usize = 0;
-
     for hunk in hunks {
         let start = (hunk.old_range.start as usize) - 1;
         if start > lines_len {
@@ -142,7 +138,7 @@ async fn apply_patch(
                     lines.insert(line_num, *value);
                     line_num += 1;
                 }
-                Line::Remove(value) => {
+                Line::Remove(_) => {
                     lines.remove(line_num);
                     line_num -= 1;
                 }
@@ -181,8 +177,7 @@ fn check_context(start: usize, hunk_lines: &Vec<Line>, lines: &Vec<&str>) -> boo
 
 #[cfg(test)]
 mod test {
-    use crate::build_tools::patches::{apply_patches, PatchResult};
-    use log::{error, info};
+    use crate::build_tools::patches::apply_patches;
     use std::path::Path;
 
     #[tokio::test]

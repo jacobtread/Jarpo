@@ -12,13 +12,11 @@ use crate::utils::net::{download_file, NetworkError};
 use crate::utils::zip::{extract_file, remove_from_zip, unzip_filtered, ZipError};
 use futures::future::TryFutureExt;
 use log::{info, warn};
-use patch::Patch;
 use std::env::current_dir;
 use std::io;
 use std::path::{Path, PathBuf, StripPrefixError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs::{create_dir_all, read, remove_dir, symlink_dir, write};
-use tokio::task::spawn_blocking;
 use tokio::try_join;
 
 mod mapping;
@@ -605,33 +603,6 @@ async fn apply_cb_patches(context: &Context<'_>, decomp_path: &PathBuf) -> Build
     let output_path = cb_path.join("src/main/java");
 
     patches::apply_patches(patch_path, decomp_path.clone(), output_path).await?;
-    Ok(())
-}
-
-fn apply_cb_patch_recursive(current: PathBuf) -> BuildResult<()> {
-    use std::fs::{read, read_dir};
-
-    let current = current;
-    let rd = read_dir(&current)?;
-
-    for entry in rd {
-        let entry = entry?;
-        let name = entry.file_name();
-        let ftype = entry.file_type()?;
-        let file_path = current.join(
-            name.to_string_lossy()
-                .as_ref(),
-        );
-        if ftype.is_dir() {
-            apply_cb_patch_recursive(file_path)?;
-        } else {
-            let patch = read(&file_path)?;
-            let patch = String::from_utf8_lossy(&patch);
-            info!("Loading patch {file_path:?}");
-            let patch = Patch::from_single(patch.as_ref()).unwrap();
-        }
-    }
-
     Ok(())
 }
 
