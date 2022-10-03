@@ -602,8 +602,9 @@ async fn apply_cb_patches(context: &Context<'_>, decomp_path: &PathBuf) -> Build
     }
 
     let patch_path = cb_path.join("nms-patches");
+    let output_path = cb_path.join("src/main/java");
 
-    patches::apply_patches(patch_path, decomp_path.clone()).await?;
+    patches::apply_patches(patch_path, decomp_path.clone(), output_path).await?;
     Ok(())
 }
 

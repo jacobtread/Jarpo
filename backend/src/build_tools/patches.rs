@@ -5,7 +5,7 @@ use patch::{Line, ParseError, Patch};
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 use std::{io, path::Path};
-use tokio::fs::{read, write};
+use tokio::fs::{create_dir_all, read, write};
 use tokio::task::{spawn_blocking, JoinError};
 
 use crate::define_from_value;
@@ -36,7 +36,11 @@ impl Display for PatchError {
 
 type PatchResult<T> = Result<T, PatchError>;
 
-pub async fn apply_patches(patches: PathBuf, target: PathBuf) -> PatchResult<()> {
+pub async fn apply_patches(
+    patches: PathBuf,
+    path_original: PathBuf,
+    path_output: PathBuf,
+) -> PatchResult<()> {
     // The number of patches applied
     let mut count = 0usize;
     let mut walk = WalkDir::new(patches);
@@ -66,7 +70,7 @@ pub async fn apply_patches(patches: PathBuf, target: PathBuf) -> PatchResult<()>
                 }
             };
 
-            match apply_patch(patch, &target).await {
+            match apply_patch(patch, &path_original, &path_output).await {
                 Ok(_) => {
                     info!("Applied patch at {patch_path:?}");
                     count += 1;
@@ -83,7 +87,11 @@ pub async fn apply_patches(patches: PathBuf, target: PathBuf) -> PatchResult<()>
     Ok(())
 }
 
-async fn apply_patch(patch: Patch<'_>, target_path: &PathBuf) -> PatchResult<()> {
+async fn apply_patch(
+    patch: Patch<'_>,
+    path_original: &PathBuf,
+    path_output: &PathBuf,
+) -> PatchResult<()> {
     // Path formated like a/net/minecraft
     let old_path = patch.old.path.as_ref();
     if old_path.len() <= 2 {
@@ -91,7 +99,7 @@ async fn apply_patch(patch: Patch<'_>, target_path: &PathBuf) -> PatchResult<()>
     }
     // Remove a/ prefix
     let old_path = &old_path[2..];
-    let path = target_path.join(old_path);
+    let path = path_original.join(old_path);
 
     if !path.exists() {
         return Err(PatchError::MissingFile(path));
@@ -144,9 +152,12 @@ async fn apply_patch(patch: Patch<'_>, target_path: &PathBuf) -> PatchResult<()>
             }
         }
     }
-
+    let output_path = path_output.join(old_path);
+    if let Some(parent) = output_path.parent() {
+        create_dir_all(parent).await?;
+    }
     let out = lines.join("\n");
-    write(path, out).await?;
+    write(output_path, out).await?;
     Ok(())
 }
 
@@ -180,8 +191,9 @@ mod test {
         env_logger::init();
         let build = Path::new("build");
         let patches = build.join("craftbukkit/nms-patches");
-        let target = build.join("work/decompile-0bc44701");
-        apply_patches(patches, target)
+        let original = build.join("work/decompile-0bc44701");
+        let output = build.join("craftbukkit/src/main/java");
+        apply_patches(patches, original, output)
             .await
             .unwrap();
     }
