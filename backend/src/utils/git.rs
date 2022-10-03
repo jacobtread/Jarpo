@@ -1,6 +1,6 @@
 use crate::build_tools::spigot::{SpigotVersion, VersionRefs};
 use crate::define_from_value;
-use git2::{ObjectType, Oid, Repository, ResetType};
+use git2::{BranchType, ObjectType, Oid, Repository, ResetType, Signature};
 use log::info;
 use std::fmt::{Display, Formatter};
 use std::fs::remove_dir_all;
@@ -99,6 +99,37 @@ impl Repo {
         let object = repo.find_object(ref_id, Some(ObjectType::Commit))?;
         let commit = object.peel(ObjectType::Commit)?;
         repo.reset(&commit, ResetType::Hard, None)?;
+        Ok(())
+    }
+
+    pub fn create_patched_branch(repo: &Repository) -> Result<(), RepoError> {
+        const BRANCH_NAME: &str = "patched";
+
+        if let Ok(mut branch) = repo.find_branch(BRANCH_NAME, BranchType::Local) {
+            // Delete existing branch
+            branch.delete()?;
+        }
+
+        let commit = repo
+            .head()?
+            .peel_to_commit()?;
+
+        let branch = repo.branch(BRANCH_NAME, &commit, true)?;
+        let signature = Signature::now("BuildTools", "buildtools@example.com")?;
+        let message = "";
+        let tree_builder = repo.treebuilder(None)?;
+        let tree = tree_builder.write()?;
+        let tree = repo.find_tree(tree)?;
+
+        let new_commit = repo.commit(
+            Some(BRANCH_NAME),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &[&commit],
+        )?;
+
         Ok(())
     }
 
