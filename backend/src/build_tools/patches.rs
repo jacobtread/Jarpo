@@ -111,19 +111,24 @@ async fn apply_patch(patch: Patch<'_>, target_path: &PathBuf) -> PatchResult<()>
 
     for hunk in hunks {
         let start = (hunk.old_range.start as usize) - 1;
-        let count = (hunk.old_range.count as usize) - 1;
         if start > lines_len {
             warn!("Hunk bounds outside file length: (Got: {start}, Length: {lines_len})");
             return Err(PatchError::Invalid);
         }
-        let hunk_lines = &hunk.lines;
-        if !check_context(start.clone(), hunk_lines, &lines) {
+        if !check_context(start.clone(), &hunk.lines, &lines) {
             warn!("Hunk context did not match");
             return Err(PatchError::Invalid);
         }
+    }
 
+    for hunk in hunks {
+        let start = (hunk.old_range.start as usize) - 1;
+        if start > lines_len {
+            warn!("Hunk bounds outside file length: (Got: {start}, Length: {lines_len})");
+            return Err(PatchError::Invalid);
+        }
         let mut line_num = start;
-        for line in hunk_lines {
+        for line in &hunk.lines {
             match line {
                 Line::Add(value) => {
                     lines.insert(line_num, *value);
@@ -142,7 +147,7 @@ async fn apply_patch(patch: Patch<'_>, target_path: &PathBuf) -> PatchResult<()>
 
     let out = lines.join("\n");
 
-    write(path, out).await?;
+    // write(path, out).await?;
     Ok(())
 }
 
@@ -156,6 +161,7 @@ fn check_context(start: usize, hunk_lines: &Vec<Line>, lines: &Vec<&str>) -> boo
         };
         let line_at = lines[line_num];
         if !line_at.eq(*value) {
+            warn!("({start}, {line_num}) Fault at: {line_at} expected: {value}");
             return false;
         }
         line_num += 1;
@@ -166,7 +172,7 @@ fn check_context(start: usize, hunk_lines: &Vec<Line>, lines: &Vec<&str>) -> boo
 #[cfg(test)]
 mod test {
     use crate::build_tools::patches::{apply_patches, PatchResult};
-    use log::error;
+    use log::{error, info};
     use std::path::Path;
 
     #[tokio::test]
@@ -176,7 +182,6 @@ mod test {
         let build = Path::new("build");
         let patches = build.join("craftbukkit/nms-patches");
         let target = build.join("work/decompile-0bc44701");
-
         apply_patches(patches, target)
             .await
             .unwrap();
