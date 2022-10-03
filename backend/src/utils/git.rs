@@ -104,7 +104,7 @@ impl Repo {
 
     /// Does a revwalk on the repository and searches each commit
     /// returning the SHA1 id of the commit found
-    fn get_mappings_reference(repo: &Repository) -> Result<String, RepoError> {
+    pub fn get_mappings_reference(repo: &Repository) -> Result<String, RepoError> {
         let mut rev_walk = repo.revwalk()?;
         rev_walk.push_head()?;
         let mut count = 0;
@@ -158,16 +158,26 @@ impl Repo {
     }
 }
 
+pub struct Repositories {
+    pub build_data: Repository,
+    pub spigot: Repository,
+    pub bukkit: Repository,
+    pub craft_bukkit: Repository,
+}
+
 /// Sets up the required repositories by downloading them and setting
 /// the correct commit ref this is done Asynchronously
-pub async fn setup_repositories(path: &Path, version: &SpigotVersion) -> Result<String, RepoError> {
+pub async fn setup_repositories(
+    path: &Path,
+    version: &SpigotVersion,
+) -> Result<Repositories, RepoError> {
     let refs = &version.refs;
     info!(
         "Setting up repositories in \"{}\" (build_data, bukkit, spigot, craftbukkit)",
         path.to_string_lossy()
     );
 
-    let (build_data_repo, _, _, _) = try_join!(
+    let (build_data_repo, spigot_repo, bukkit_repo, craftbukkit_repo) = try_join!(
         Repo::BuildData.setup(refs, path.join("build_data")),
         Repo::Spigot.setup(refs, path.join("spigot")),
         Repo::Bukkit.setup(refs, path.join("bukkit")),
@@ -176,15 +186,12 @@ pub async fn setup_repositories(path: &Path, version: &SpigotVersion) -> Result<
 
     info!("Repositories successfully setup");
 
-    info!("Determining mappings hash");
-
-    let reference = Repo::get_mappings_reference(&build_data_repo)?;
-    let md = md5::compute(reference);
-    let hash = &format!("{md:x}")[24..];
-
-    info!("Mappings hash: {hash}");
-
-    Ok(hash.to_string())
+    Ok(Repositories {
+        build_data: build_data_repo,
+        spigot: spigot_repo,
+        bukkit: bukkit_repo,
+        craft_bukkit: craftbukkit_repo,
+    })
 }
 
 #[cfg(test)]

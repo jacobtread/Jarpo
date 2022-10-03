@@ -6,7 +6,7 @@ use crate::models::build_tools::BuildDataInfo;
 use crate::utils::cmd::{execute_command, CommandError};
 use crate::utils::constants::PARODY_BUILD_TOOLS_VERSION;
 use crate::utils::files::{delete_existing, ensure_dir_exists, ensure_is_file, move_directory};
-use crate::utils::git::{setup_repositories, RepoError};
+use crate::utils::git::{setup_repositories, Repo, RepoError, Repositories};
 use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
 use crate::utils::zip::{extract_file, remove_from_zip, unzip_filtered, ZipError};
@@ -65,9 +65,10 @@ pub struct Context<'a> {
     build_path: &'a Path,
     work_path: &'a PathBuf,
     maven: MavenContext<'a>,
+    repositories: &'a Repositories,
     vanilla_jar: &'a Path,
-    mappings_hash: &'a str,
     fm_jar: &'a Path,
+    mappings_hash: &'a str,
 }
 
 pub async fn run_build_tools(version: &str) -> BuildResult<()> {
@@ -75,10 +76,18 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
     let build_path = Path::new("build");
     ensure_dir_exists(build_path).await?;
 
-    let (mappings_hash, maven_path) = try_join!(
+    let (repositories, maven_path) = try_join!(
         setup_repositories(build_path, &spigot_version).map_err(|err| BuildToolsError::Repo(err)),
         maven::setup(build_path).map_err(|err| BuildToolsError::Maven(err))
     )?;
+
+    let repositories: Repositories = repositories;
+    info!("Determining mappings hash");
+    let reference = Repo::get_mappings_reference(&repositories.build_data)?;
+    let md = md5::compute(reference);
+    let mappings_hash = &format!("{md:x}")[24..];
+
+    info!("Mappings hash: {mappings_hash}");
 
     let build_info = get_build_info(build_path).await?;
 
@@ -115,9 +124,10 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
             build_info: &build_info,
             script_path: maven_path,
         },
+        repositories: &repositories,
         vanilla_jar: &jar_path,
         fm_jar: &fm_jar,
-        mappings_hash: &mappings_hash,
+        mappings_hash,
     };
 
     if ensure_is_file(&fm_jar).await? {
@@ -309,6 +319,7 @@ fn replace_dir_names(value: &str) -> String {
 /// Applies the special source renaming to the jars
 async fn apply_special_source(context: &Context<'_>, m_paths: MappingsPaths) -> BuildResult<()> {
     info!("Applying special source");
+
     let mappings_hash = context.mappings_hash;
     let current_dir = current_dir()?;
     let work_path = context.work_path;
@@ -425,6 +436,8 @@ async fn create_mappings(context: &Context<'_>) -> BuildResult<Option<MappingsPa
         .build_path
         .join("build_data");
 
+    let mappings_hash = context.mappings_hash;
+
     let mappings_path = bd_path.join("mappings");
     ensure_dir_exists(&mappings_path).await?;
 
@@ -445,7 +458,7 @@ async fn create_mappings(context: &Context<'_>) -> BuildResult<Option<MappingsPa
         });
 
     // Field mappings name & path
-    let fm_path = format!("bukkit-{}-fields.csrg", context.mappings_hash);
+    let fm_path = format!("bukkit-{}-fields.csrg", mappings_hash);
     let fm_path = work_path.join(fm_path);
 
     if let Some(mappings_url) = &bd_info.mappings_url {
@@ -465,7 +478,7 @@ async fn create_mappings(context: &Context<'_>) -> BuildResult<Option<MappingsPa
             let mojang_mappings = read(&mojang_path).await?;
             let mojang_mappings = String::from_utf8_lossy(&mojang_mappings);
             if mm_path.is_none() {
-                let out_path = format!("bukkit-{}-members.csrg", context.mappings_hash);
+                let out_path = format!("bukkit-{}-members.csrg", mappings_hash);
                 let out_path = work_path.join(out_path);
                 let output = mapper.make_csrg(mojang_mappings.as_ref(), true);
                 write(&out_path, output).await?;
@@ -491,7 +504,7 @@ async fn create_mappings(context: &Context<'_>) -> BuildResult<Option<MappingsPa
                 .install_file(&fm_path, "csrg", "maps-spigot-fields")
                 .await?;
 
-            let comb_path = format!("bukkit-{}-combined.csrg", context.mappings_hash);
+            let comb_path = format!("bukkit-{}-combined.csrg", mappings_hash);
             let comb_path = work_path.join(comb_path);
 
             if !ensure_is_file(&comb_path).await? {
