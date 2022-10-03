@@ -146,8 +146,7 @@ async fn apply_patch(patch: Patch<'_>, target_path: &PathBuf) -> PatchResult<()>
     }
 
     let out = lines.join("\n");
-
-    // write(path, out).await?;
+    write(path, out).await?;
     Ok(())
 }
 
