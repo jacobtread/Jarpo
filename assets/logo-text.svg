@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="162.32649mm"
+   height="42.322552mm"
+   viewBox="0 0 162.32649 42.322552"
+   version="1.1"
+   id="svg5"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs2">
+    <linearGradient
+       id="linearGradient3982">
+      <stop
+         style="stop-color:#51a9bc;stop-opacity:1;"
+         offset="0.00555556"
+         id="stop3978" />
+      <stop
+         style="stop-color:#19ff60;stop-opacity:1;"
+         offset="1"
+         id="stop3980" />
+    </linearGradient>
+    <linearGradient
+       xlink:href="#linearGradient3982"
+       id="linearGradient3984"
+       x1="15.170499"
+       y1="53.353333"
+       x2="75.170753"
+       y2="53.353333"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(1.0517209,0,0,1.0914645,7.3368337,-12.40346)" />
+  </defs>
+  <g
+     id="layer1"
+     transform="translate(-23.935618,-24.668536)">
+    <rect
+       style="fill:#333333;fill-opacity:1;stroke:#ffffff;stroke-width:0.923333;stroke-linejoin:bevel;stroke-dasharray:none;stroke-opacity:1;paint-order:stroke markers fill"
+       id="rect4038"
+       width="209.52625"
+       height="90.9412"
+       x="0.56618971"
+       y="0.56618953" />
+    <g
+       id="g5655">
+      <text
+         xml:space="preserve"
+         style="font-size:35.378px;font-family:'Microsoft YaHei UI';-inkscape-font-specification:'Microsoft YaHei UI';fill:#ffffff;stroke-width:1.85665;stroke-linejoin:bevel;paint-order:stroke markers fill"
+         x="86.475014"
+         y="52.433971"
+         id="text236"
+         transform="scale(1.0670545,0.93715926)"><tspan
+           id="tspan234"
+           style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-family:Bahnschrift;-inkscape-font-specification:Bahnschrift;fill:#ffffff;stroke-width:1.85665"
+           x="86.475014"
+           y="52.433971">Jarpo</tspan></text>
+      <text
+         xml:space="preserve"
+         style="font-size:8.46667px;font-family:'Microsoft YaHei UI';-inkscape-font-specification:'Microsoft YaHei UI';fill:#b3b3b3;stroke-width:1.85665;stroke-linejoin:bevel;paint-order:stroke markers fill"
+         x="89.016167"
+         y="66.889908"
+         id="text236-1"
+         transform="scale(1.0670545,0.93715926)"><tspan
+           id="tspan234-6"
+           style="font-style:normal;font-variant:normal;font-weight:normal;font-stretch:normal;font-size:8.46667px;font-family:Bahnschrift;-inkscape-font-specification:Bahnschrift;fill:#b3b3b3;stroke-width:1.85665"
+           x="89.016167"
+           y="66.889908">Server Jar Repository</tspan></text>
+    </g>
+    <path
+       id="rect448"
+       style="fill:url(#linearGradient3984);fill-opacity:1;stroke:none;stroke-width:1.3114;stroke-linejoin:bevel;stroke-dasharray:none;stroke-opacity:1;paint-order:stroke markers fill"
+       d="m 28.055287,24.668536 c -2.282238,0 -4.119669,1.906865 -4.119669,4.275346 v 33.771857 c 0,2.368481 1.837431,4.275346 4.119669,4.275346 h 53.576882 c 2.282238,0 4.119669,-1.906865 4.119669,-4.275346 V 28.943882 c 0,-2.368481 -1.837431,-4.275346 -4.119669,-4.275346 z m 27.905588,7.99738 c 3.159556,2.29e-4 5.776563,2.545368 5.981672,5.817404 l 7.496382,8.012045 c 0.413475,-0.184433 0.85868,-0.279986 1.308729,-0.280886 1.839418,-6.3e-5 3.33058,1.547447 3.330519,3.456376 5.9e-5,1.908927 -1.491102,3.456438 -3.330519,3.456374 -1.839205,-2.47e-4 -3.330035,-1.547667 -3.329974,-3.456374 0.05999,-1.419298 -6.267559,-5.287304 -8.070854,-5.650452 -0.436093,0.309128 -0.907659,0.556015 -1.402209,0.735494 -0.457363,0.165984 -0.934409,0.274292 -1.420688,0.321498 l -3.684874,7.002996 c 1.211288,0.954019 1.922769,2.44119 1.922874,4.019276 -1.76e-4,2.786868 -2.177233,5.045942 -4.862623,5.045812 -2.685176,-1.82e-4 -4.861901,-2.259164 -4.862077,-5.045812 6.76e-4,-2.769771 2.152496,-5.021282 4.821316,-5.044683 l 1.045135,-8.427172 C 50.220668,41.715885 50.088195,40.364249 49.96616,38.887166 50.04605,38.74157 37.492788,35.980062 39.032117,33.652321 c 0.114234,-1.936308 8.430008,0.233629 13.477585,0.151807 1.009823,-0.739544 2.215228,-1.137121 3.451173,-1.138212 z" />
+  </g>
+</svg>
