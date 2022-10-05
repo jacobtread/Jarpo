@@ -1,6 +1,9 @@
+use async_walkdir::WalkDir;
+use futures::StreamExt;
 use std::io;
+use std::io::ErrorKind;
 use std::path::Path;
-use tokio::fs::{create_dir_all, remove_dir_all, remove_file, rename};
+use tokio::fs::{create_dir_all, read, remove_dir_all, remove_file, rename, write};
 
 /// Checks if the provided path is a file and will
 /// remove it if its not.
@@ -73,5 +76,30 @@ pub async fn move_directory(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io:
     let to = to.as_ref();
     delete_existing(&to).await?;
     rename(from, to).await?;
+    Ok(())
+}
+
+/// Copies the contents from one directory to another by
+/// walking the paths and creating any files / directories
+pub async fn copy_directory(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
+    let from = from.as_ref();
+    let to = to.as_ref();
+    let mut walk = WalkDir::new(from);
+    while let Some(entry) = walk.next().await {
+        let entry = entry?;
+        let file_type = entry.file_type().await?;
+        let entry_path = entry.path();
+        let new_path = entry_path
+            .strip_prefix(from)
+            .map_err(|err| io::Error::new(ErrorKind::Other, err))?;
+        let new_path = to.join(new_path);
+        if file_type.is_dir() {
+            ensure_dir_exists(new_path);
+        } else if file_type.is_file() {
+            ensure_parent_exists(&new_path);
+            let contents = read(entry_path).await?;
+            write(new_path, contents);
+        }
+    }
     Ok(())
 }

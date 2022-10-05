@@ -5,12 +5,15 @@ use crate::define_from_value;
 use crate::models::build_tools::BuildDataInfo;
 use crate::utils::cmd::{execute_command, CommandError};
 use crate::utils::constants::PARODY_BUILD_TOOLS_VERSION;
-use crate::utils::files::{delete_existing, ensure_dir_exists, ensure_is_file, move_directory};
+use crate::utils::files::{
+    copy_directory, delete_existing, ensure_dir_exists, ensure_is_file, move_directory,
+};
 use crate::utils::git::{setup_repositories, Repo, RepoError, Repositories};
 use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
 use crate::utils::zip::{extract_file, remove_from_zip, unzip_filtered, ZipError};
-use futures::future::TryFutureExt;
+use actix_web::web::to;
+use futures::future::{join_all, try_join_all, TryFutureExt};
 use log::{info, warn};
 use std::env::current_dir;
 use std::io;
@@ -145,6 +148,13 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
     let decomp_path = decompile(&context).await?;
 
     apply_cb_patches(&context, &decomp_path).await?;
+
+    clone_for_outdated(&context).await?;
+
+    info!("Compiling bukkit & craftbukkit...\n\n");
+    compile_bukkit(&context).await?;
+    info!("Compiling spigot...\n\n");
+    compile_spigot(&context).await?;
 
     Ok(())
 }
@@ -603,6 +613,78 @@ async fn apply_cb_patches(context: &Context<'_>, decomp_path: &PathBuf) -> Build
     let output_path = cb_path.join("src/main/java");
 
     patches::apply_patches(patch_path, decomp_path.clone(), output_path).await?;
+    Ok(())
+}
+
+async fn clone_for_outdated(context: &Context<'_>) -> BuildResult<()> {
+    if let Some(tools_version) = context
+        .build_info
+        .tools_version
+    {
+        if tools_version >= 93 {
+            return Ok(());
+        }
+    }
+
+    let build_path = context.build_path;
+    let spigot_path = build_path.join("spigot");
+    let spigot_api = spigot_path.join("Bukkit");
+
+    let mut tasks = Vec::new();
+
+    if !spigot_api.exists() {
+        info!("Cloning bukkit contents for old version");
+        let from_path = build_path.join("bukkit");
+        tasks.push(copy_directory(from_path, spigot_api));
+    }
+
+    let spigot_server = spigot_path.join("CraftBukkit");
+    if !spigot_server.exists() {
+        info!("Cloning bukkit contents for old version");
+        let from_path = build_path.join("craftbukkit");
+        tasks.push(copy_directory(from_path, spigot_server));
+    }
+
+    let _ = try_join_all(tasks).await?;
+
+    Ok(())
+}
+
+async fn compile_bukkit(context: &Context<'_>) -> BuildResult<()> {
+    let maven = &context.maven;
+    let build_path = context.build_path;
+    let bukkit_path = build_path.join("bukkit");
+    maven
+        .clean_install(bukkit_path)
+        .await?;
+    let craftbukkit_path = build_path.join("craftbukkit");
+    maven
+        .clean_install(craftbukkit_path)
+        .await?;
+    Ok(())
+}
+
+async fn compile_spigot(context: &Context<'_>) -> BuildResult<()> {
+    let maven = &context.maven;
+    let build_path = context.build_path;
+    let spigot_path = build_path.join("spigot");
+
+    let sh = if context
+        .build_info
+        .server_url
+        .is_some()
+    {
+        "sh".to_string()
+    } else if let Ok(env) = std::env::var("SHELL") {
+        env.trim()
+    } else {
+        "bash".to_string()
+    };
+
+    execute_command(&spigot_path, &sh, &["applyPatches.sh"]).await?;
+    maven
+        .clean_install(&spigot_path)
+        .await?;
     Ok(())
 }
 

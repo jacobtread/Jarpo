@@ -19,6 +19,7 @@ pub enum MavenError {
     Zip(ZipError),
     Request(reqwest::Error),
     IO(io::Error),
+    ExecutionFailed,
 }
 
 define_from_value! {
@@ -117,6 +118,10 @@ impl<'a> MavenContext<'a> {
 
         transfer_logging_output(&output);
 
+        if !output.status.success() {
+            return Err(MavenError::ExecutionFailed);
+        }
+
         Ok(output.status)
     }
 
@@ -171,5 +176,10 @@ impl<'a> MavenContext<'a> {
             ],
         )
         .await
+    }
+
+    pub async fn clean_install(&self, path: impl AsRef<Path>) -> Result<ExitStatus, MavenError> {
+        self.execute(path, &["clean", "install"])
+            .await
     }
 }
