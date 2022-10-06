@@ -112,6 +112,13 @@ impl<'a> MavenContext<'a> {
         let cmd: &str = "sh";
 
         let mut command = Command::new(cmd);
+
+        const MAVEN_KEY: &str = "MAVEN_OPTS";
+        let mut maven_opts = std::env::var(MAVEN_KEY)
+            .ok()
+            .unwrap_or_else(|| String::from("-Xmx1024M"));
+
+        command.env(MAVEN_KEY, maven_opts);
         command.current_dir(working_dir);
         command.args(new_args);
         let output = command.output().await?;
