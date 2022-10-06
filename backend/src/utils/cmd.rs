@@ -120,7 +120,15 @@ pub fn transfer_logging_output(output_in: &Output) {
 
     let mut error_output = false;
 
+    let mut i = 0usize;
+
     for line in output.lines() {
+        i += 1;
+        if i > 100 {
+            warn!("Too many lines.. Truncaited at 100 lines...");
+            break;
+        }
+
         let (level, text) = match get_line_parts(line) {
             Some(value) => value,
             None => {
