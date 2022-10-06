@@ -81,9 +81,12 @@ pub async fn move_directory(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io:
 
 /// Copies the contents from one directory to another by
 /// walking the paths and creating any files / directories
-pub async fn copy_directory(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
+pub async fn copy_contents(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
     let from = from.as_ref();
     let to = to.as_ref();
+    if !to.exists() {
+        create_dir_all(to).await?;
+    }
     let mut walk = WalkDir::new(from);
     while let Some(entry) = walk.next().await {
         let entry = entry?;
