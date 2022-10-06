@@ -612,6 +612,11 @@ async fn apply_cb_patches(context: &Context<'_>, decomp_path: &PathBuf) -> Build
     let patch_path = cb_path.join("nms-patches");
     let output_path = cb_path.join("src/main/java");
 
+    info!("Copying decompile output to craftbukkit");
+    copy_directory(&decomp_path, &output_path).await?;
+
+    info!("Patching decompiled output");
+
     patches::apply_patches(patch_path, decomp_path.clone(), output_path).await?;
     Ok(())
 }
@@ -654,9 +659,13 @@ async fn compile_bukkit(context: &Context<'_>) -> BuildResult<()> {
     let maven = &context.maven;
     let build_path = context.build_path;
     let bukkit_path = build_path.join("bukkit");
+
+    info!("Compiling Bukkit");
     maven
         .clean_install(bukkit_path)
         .await?;
+
+    info!("Compiling CraftBukkit");
     let craftbukkit_path = build_path.join("craftbukkit");
     maven
         .clean_install(craftbukkit_path)
@@ -676,12 +685,15 @@ async fn compile_spigot(context: &Context<'_>) -> BuildResult<()> {
     {
         "sh".to_string()
     } else if let Ok(env) = std::env::var("SHELL") {
-        env.trim()
+        env.trim().to_string()
     } else {
         "bash".to_string()
     };
 
+    info!("Patching Spigot");
     execute_command(&spigot_path, &sh, &["applyPatches.sh"]).await?;
+
+    info!("Compiling Spigot");
     maven
         .clean_install(&spigot_path)
         .await?;
