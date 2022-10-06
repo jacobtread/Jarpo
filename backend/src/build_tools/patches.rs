@@ -140,7 +140,6 @@ async fn apply_patch(
                 }
                 Line::Remove(_) => {
                     lines.remove(line_num);
-                    line_num -= 1;
                 }
                 Line::Context(_) => {
                     line_num += 1;
