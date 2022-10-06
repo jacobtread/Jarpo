@@ -6,7 +6,7 @@ use crate::models::build_tools::BuildDataInfo;
 use crate::utils::cmd::{execute_command, CommandError};
 use crate::utils::constants::PARODY_BUILD_TOOLS_VERSION;
 use crate::utils::files::{
-    copy_directory, delete_existing, ensure_dir_exists, ensure_is_file, move_directory,
+    copy_contents, delete_existing, ensure_dir_exists, ensure_is_file, move_directory,
 };
 use crate::utils::git::{setup_repositories, Repo, RepoError, Repositories};
 use crate::utils::hash::HashType;
@@ -19,7 +19,7 @@ use std::env::current_dir;
 use std::io;
 use std::path::{Path, PathBuf, StripPrefixError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::fs::{create_dir_all, read, remove_dir, symlink_dir, write};
+use tokio::fs::{create_dir_all, read, remove_dir, remove_dir_all, symlink_dir, write};
 use tokio::try_join;
 
 mod mapping;
@@ -600,20 +600,15 @@ async fn apply_cb_patches(context: &Context<'_>, decomp_path: &PathBuf) -> Build
     let cb_path = build_path.join("craftbukkit");
     let nms_path = cb_path.join("src/main/java/net");
     if nms_path.exists() {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_else(|_| Duration::from_millis(0))
-            .as_millis();
-        let move_target = format!("nms.old.{}", timestamp);
-        let move_target = work_path.join(&move_target);
-        move_directory(&nms_path, &move_target).await?;
+        info!("Removing old decompile contents");
+        remove_dir_all(&nms_path).await?;
     }
 
     let patch_path = cb_path.join("nms-patches");
     let output_path = cb_path.join("src/main/java");
 
     info!("Copying decompile output to craftbukkit");
-    copy_directory(&decomp_path, &output_path).await?;
+    copy_contents(&decomp_path, &output_path).await?;
 
     info!("Patching decompiled output");
 
@@ -640,14 +635,14 @@ async fn clone_for_outdated(context: &Context<'_>) -> BuildResult<()> {
     if !spigot_api.exists() {
         info!("Cloning bukkit contents for old version");
         let from_path = build_path.join("bukkit");
-        tasks.push(copy_directory(from_path, spigot_api));
+        tasks.push(copy_contents(from_path, spigot_api));
     }
 
     let spigot_server = spigot_path.join("CraftBukkit");
     if !spigot_server.exists() {
         info!("Cloning bukkit contents for old version");
         let from_path = build_path.join("craftbukkit");
-        tasks.push(copy_directory(from_path, spigot_server));
+        tasks.push(copy_contents(from_path, spigot_server));
     }
 
     let _ = try_join_all(tasks).await?;
