@@ -94,11 +94,11 @@ pub async fn copy_directory(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io:
             .map_err(|err| io::Error::new(ErrorKind::Other, err))?;
         let new_path = to.join(new_path);
         if file_type.is_dir() {
-            ensure_dir_exists(new_path);
+            ensure_dir_exists(new_path).await?;
         } else if file_type.is_file() {
-            ensure_parent_exists(&new_path);
+            ensure_parent_exists(&new_path).await?;
             let contents = read(entry_path).await?;
-            write(new_path, contents);
+            write(new_path, contents).await?;
         }
     }
     Ok(())
