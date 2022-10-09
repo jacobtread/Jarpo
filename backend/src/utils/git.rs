@@ -118,6 +118,7 @@ impl Repo {
         let signature = Signature::now("BuildTools", "buildtools@example.com")?;
         let message = "";
         let tree_builder = repo.treebuilder(None)?;
+
         let tree = tree_builder.write()?;
         let tree = repo.find_tree(tree)?;
 
