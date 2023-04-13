@@ -60,8 +60,7 @@ pub async fn apply_patches(
                 }
             };
             let contents = String::from_utf8_lossy(&contents);
-            let contents = contents.replace("\r\n", "\n");
-            let patch = match Patch::from_single(&contents) {
+            let patch = match Patch::from_single(contents.as_ref()) {
                 Ok(value) => value,
                 Err(err) => {
                     warn!("Unable to apply patch at {patch_path:?} (Unable to parse patch file):\n{err:?}");

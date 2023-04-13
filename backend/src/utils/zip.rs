@@ -1,13 +1,15 @@
 use crate::define_from_value;
 use crate::utils::files::{delete_existing, ensure_parent_exists, move_file};
 use async_zip::error::ZipError as ZipErrorInternal;
-use async_zip::read::fs::ZipFileReader;
-use async_zip::write::{EntryOptions, ZipFileWriter};
+use async_zip::tokio::read::seek::ZipFileReader;
+use async_zip::tokio::write::ZipFileWriter;
+use async_zip::ZipEntryBuilder;
+use futures::AsyncWriteExt;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use tokio::fs::{create_dir_all, File};
-use tokio::io;
 use tokio::io::copy;
+use tokio::io::{self, AsyncReadExt};
 
 #[derive(Debug)]
 pub enum ZipError {
@@ -43,31 +45,56 @@ pub async fn remove_from_zip(
     }
     delete_existing(output).await?;
     {
-        let zip = ZipFileReader::new(input).await?;
+        let file = File::open(input).await?;
+        let mut zip = ZipFileReader::new(file).await?;
+        let entries = zip.file().entries();
         let out_file = File::create(output).await?;
         let mut out_zip = ZipFileWriter::new(out_file);
-        let entries = zip.entries();
 
         for i in 0..entries.len() {
-            let entry = &entries[i];
-            let name = entry.name();
+            let entry = zip
+                .file()
+                .entries()
+                .get(i)
+                .ok_or(ZipError::MissingFile)?
+                .entry();
+            let name = entry.filename();
 
             // Skip ignored entries
             if files.contains(&name) {
                 continue;
             }
 
-            let options = EntryOptions::new(name.to_string(), entry.compression().clone());
+            let b = ZipEntryBuilder::new(name.to_string(), entry.compression()).build();
+
             if entry.dir() {
                 out_zip
-                    .write_entry_whole(options, &[])
+                    .write_entry_whole(b, &[])
                     .await?;
             } else {
                 let mut stream = out_zip
-                    .write_entry_stream(options)
+                    .write_entry_stream(b)
                     .await?;
-                let mut reader = zip.entry_reader(i).await?;
-                copy(&mut reader, &mut stream).await?;
+
+                let mut reader = zip.entry(i).await?;
+
+                let mut buffer = [0u8; 1024];
+
+                loop {
+                    let count = reader
+                        .read(&mut buffer)
+                        .await?;
+
+                    if count == 0 {
+                        break;
+                    }
+
+                    let slice = &buffer[..count];
+                    stream
+                        .write_all(slice)
+                        .await?;
+                }
+
                 stream.close().await?;
             }
         }
@@ -84,16 +111,22 @@ pub async fn remove_from_zip(
 /// and writes the contents to `output`
 pub async fn extract_file(input: &PathBuf, output: &PathBuf, file_name: &str) -> ZipResult<bool> {
     delete_existing(output).await?;
-    let zip = ZipFileReader::new(input).await?;
-    let entries = zip.entries();
+    let file = File::open(input).await?;
+    let mut zip = ZipFileReader::new(file).await?;
+    let entries = zip.file().entries();
     for i in 0..entries.len() {
-        let entry = &entries[i];
-        if entry.name() == file_name {
+        let entry = zip
+            .file()
+            .entries()
+            .get(i)
+            .ok_or(ZipError::MissingFile)?
+            .entry();
+        if entry.filename() == file_name {
             if entry.dir() {
                 return Ok(false);
             }
             ensure_parent_exists(&output).await?;
-            let mut reader = zip.entry_reader(i).await?;
+            let mut reader = zip.entry(i).await?;
             let mut out_file = File::create(output).await?;
             copy(&mut reader, &mut out_file).await?;
             return Ok(true);
@@ -111,18 +144,25 @@ pub async fn unzip(input: &PathBuf, output: &PathBuf) -> ZipResult<()> {
         return Err(ZipError::MissingFile);
     }
 
-    let zip = ZipFileReader::new(input).await?;
-    let entries = zip.entries();
+    let file = File::open(input).await?;
+
+    let mut zip = ZipFileReader::new(file).await?;
+    let entries = zip.file().entries();
 
     for i in 0..entries.len() {
-        let entry = &entries[i];
-        let out_path = output.join(entry.name());
+        let entry = zip
+            .file()
+            .entries()
+            .get(i)
+            .ok_or(ZipError::MissingFile)?
+            .entry();
+        let out_path = output.join(entry.filename());
         delete_existing(&out_path).await?;
         if entry.dir() {
             create_dir_all(out_path).await?;
         } else {
             ensure_parent_exists(&out_path).await?;
-            let mut reader = zip.entry_reader(i).await?;
+            let mut reader = zip.entry(i).await?;
             let mut out_file = File::create(out_path).await?;
             copy(&mut reader, &mut out_file).await?;
         }
@@ -145,13 +185,19 @@ pub async fn unzip_filtered<F: Fn(&str) -> bool>(
     }
 
     let output = output.as_ref();
+    let file = File::open(input).await?;
 
-    let zip = ZipFileReader::new(input).await?;
-    let entries = zip.entries();
+    let mut zip = ZipFileReader::new(file).await?;
+    let entries = zip.file().entries();
 
     for i in 0..entries.len() {
-        let entry = &entries[i];
-        let name = entry.name();
+        let entry = zip
+            .file()
+            .entries()
+            .get(i)
+            .ok_or(ZipError::MissingFile)?
+            .entry();
+        let name = entry.filename();
         if filter(name) {
             let out_path = output.join(name);
             delete_existing(&out_path).await?;
@@ -159,7 +205,7 @@ pub async fn unzip_filtered<F: Fn(&str) -> bool>(
                 create_dir_all(out_path).await?;
             } else {
                 ensure_parent_exists(&out_path).await?;
-                let mut reader = zip.entry_reader(i).await?;
+                let mut reader = zip.entry(i).await?;
                 let mut out_file = File::create(out_path).await?;
                 copy(&mut reader, &mut out_file).await?;
             }
