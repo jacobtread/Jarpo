@@ -61,7 +61,7 @@ pub async fn apply_patches(
 
             match apply_patch(patch, &path_original, &path_output).await {
                 Ok(_) => {
-                    info!("Applied patch at {patch_path:?}");
+                    info!("Applied patch at {name:?}");
                     count += 1;
                 }
                 Err(err) => {
@@ -120,12 +120,14 @@ async fn apply_patch(
     }
 
     for hunk in hunks {
-        let start = (hunk.old_range.start as usize) - 1;
+        let start = (hunk.new_range.start as usize) - 1;
         if start > lines_len {
             warn!("Hunk bounds outside file length: (Got: {start}, Length: {lines_len})");
             return Err(PatchError::Invalid);
         }
         let mut line_num = start;
+        let mut added = 0;
+
         for line in &hunk.lines {
             match line {
                 Line::Add(value) => {
@@ -141,6 +143,7 @@ async fn apply_patch(
             }
         }
     }
+
     let output_path = path_output.join(old_path);
     if let Some(parent) = output_path.parent() {
         create_dir_all(parent).await?;
