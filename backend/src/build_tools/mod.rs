@@ -10,7 +10,7 @@ use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
 use crate::utils::zip::{extract_file, remove_from_zip, unzip_filtered, ZipError};
 use futures::future::{try_join_all, TryFutureExt};
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::env::current_dir;
 use std::io;
 use std::path::{Path, PathBuf, StripPrefixError};
@@ -64,7 +64,13 @@ pub struct Context<'a> {
 }
 
 pub async fn run_build_tools(version: &str) -> BuildResult<()> {
+    debug!("Retrieving spigot version...");
+
     let spigot_version = spigot::get_version(version).await?;
+
+    debug!("Loaded spigot version: {:#?}", spigot_version);
+    debug!("Setting up build directory");
+
     let build_path = Path::new("build");
     ensure_dir_exists(build_path).await?;
 

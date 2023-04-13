@@ -1,6 +1,6 @@
 use crate::build_tools::spigot::SpigotVersion;
 use crate::models::build_tools::BuildDataInfo;
-use crate::utils::cmd::transfer_logging_output;
+use crate::utils::cmd::piped_command;
 use crate::utils::constants::{MAVEN_DOWNLOAD_URL, MAVEN_VERSION};
 use crate::utils::net::create_reqwest;
 use crate::utils::zip::{unzip, ZipError};
@@ -110,22 +110,23 @@ impl<'a> MavenContext<'a> {
         let mut command = Command::new(cmd);
 
         const MAVEN_KEY: &str = "MAVEN_OPTS";
-        let maven_opts = std::env::var(MAVEN_KEY)
-            .ok()
-            .unwrap_or_else(|| String::from("-Xmx1024M"));
 
-        command.env(MAVEN_KEY, maven_opts);
+        command.env(MAVEN_KEY, "-Xmx1024M");
+        command.env(
+            "_JAVA_OPTIONS",
+            "-Djdk.net.URLClassPath.disableClassPathURLCheck=true",
+        );
         command.current_dir(working_dir);
         command.args(new_args);
-        let output = command.output().await?;
+        let status = piped_command(command).await?;
 
-        transfer_logging_output(&output);
+        debug!("Execute status: {:?}", status);
 
-        if !output.status.success() {
+        if !status.success() {
             return Err(MavenError::ExecutionFailed);
         }
 
-        Ok(output.status)
+        Ok(status)
     }
 
     pub async fn install_file(

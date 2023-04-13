@@ -1,8 +1,10 @@
+use futures::try_join;
 use log::{error, info, warn};
 use std::io;
 use std::path::Path;
-use std::process::{ExitStatus, Output};
+use std::process::{ExitStatus, Stdio};
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 
 #[derive(Debug, Error)]
@@ -30,10 +32,9 @@ pub async fn execute_command(
         command.env("MAVEN_OPTS", "-Xmx1024M");
     }
 
-    let output = command.output().await?;
-    transfer_logging_output(&output);
+    let status = piped_command(command).await?;
 
-    Ok(output.status)
+    Ok(status)
 }
 
 /// Parses the provided command into the command itself and
@@ -79,54 +80,44 @@ fn transform_args<'a: 'b, 'b>(args: Vec<&'a str>, args_in: &'b [&str]) -> Vec<&'
     out
 }
 
-/// Transfers the logging output from a process and transfers it into
-/// the logging functions for this application.
-pub fn transfer_logging_output(output_in: &Output) {
-    let output: &Vec<u8>;
-    let error: bool;
+pub async fn piped_command(mut command: Command) -> io::Result<ExitStatus> {
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
 
-    if output_in.status.success() {
-        error = false;
-        output = &output_in.stdout;
-    } else {
-        error = true;
-        output = if output_in.stderr.is_empty() {
-            &output_in.stdout
-        } else {
-            &output_in.stderr
-        }
-    }
+    let mut child = command.spawn()?;
 
-    let output = String::from_utf8_lossy(output);
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
 
-    /// Function for parsing the string and providing its
-    /// individual parts (format: `[LEVEL] TEXT`) splits
-    /// this into two string slices (LEVEL, TEXT). Will
-    /// return None if unable to parse.
-    fn get_line_parts(line: &str) -> Option<(&str, &str)> {
-        let start = line.find('[')?;
-        let end = line.find(']')?;
-        if end <= start {
-            return None;
-        }
-        let level = &line[start + 1..end - 1];
-        let text = &line[end + 1..];
-        Some((level, text))
-    }
+    let a_fut = pipe_lines(false, &mut stdout_pipe);
+    let b_fut = pipe_lines(true, &mut stderr_pipe);
 
-    let mut error_output = false;
+    let (status, _, _) = try_join!(child.wait(), a_fut, b_fut)?;
 
-    let mut i = 0usize;
+    drop(stdout_pipe);
+    drop(stderr_pipe);
 
-    for line in output.lines() {
-        i += 1;
-        if i > 100 {
-            warn!("Too many lines.. Truncaited at 100 lines...");
-            break;
-        }
+    Ok(status)
+}
 
-        let (level, text) = match get_line_parts(line) {
-            Some(value) => value,
+async fn pipe_lines<A: AsyncRead + Unpin>(error: bool, io: &mut Option<A>) -> io::Result<()> {
+    let io = match io {
+        Some(value) => value,
+        None => return Ok(()),
+    };
+    let reader = BufReader::new(io);
+    let mut lines = reader.lines();
+
+    let mut error_output = error;
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        match get_line_parts(&line) {
+            Some((level, text)) => match level {
+                "WARN" | "WARNING" => warn!("{text}"),
+                "FATAL" | "ERROR" => error!("{text}"),
+                _ if error || error_output => error!("{text}"),
+                _ => info!("{text}"),
+            },
             None => {
                 if line.contains("Error") {
                     error!("{line}");
@@ -140,22 +131,26 @@ pub fn transfer_logging_output(output_in: &Output) {
                         info!("{line}");
                     }
                 }
-                continue;
             }
         };
-
-        match level {
-            "WARN" => warn!("{text}"),
-            "FATAL" | "ERROR" => error!("{text}"),
-            _ => {
-                if error {
-                    error!("{text}");
-                } else {
-                    info!("{text}");
-                }
-            }
-        }
     }
+
+    Ok(())
+}
+
+/// Function for parsing the string and providing its
+/// individual parts (format: `[LEVEL] TEXT`) splits
+/// this into two string slices (LEVEL, TEXT). Will
+/// return None if unable to parse.
+fn get_line_parts(line: &str) -> Option<(&str, &str)> {
+    let start = line.find('[')?;
+    let end = line.find(']')?;
+    if end <= start {
+        return None;
+    }
+    let level = &line[start + 1..end];
+    let text = &line[end + 1..];
+    Some((level, text))
 }
 
 #[cfg(test)]
