@@ -1,5 +1,4 @@
 use crate::build_tools::spigot::SpigotVersion;
-use crate::define_from_value;
 use crate::models::build_tools::BuildDataInfo;
 use crate::utils::cmd::transfer_logging_output;
 use crate::utils::constants::{MAVEN_DOWNLOAD_URL, MAVEN_VERSION};
@@ -10,24 +9,21 @@ use std::env::current_dir;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use thiserror::Error;
 use tokio::fs::{remove_file, File};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum MavenError {
-    Zip(ZipError),
-    Request(reqwest::Error),
-    IO(io::Error),
+    #[error(transparent)]
+    Zip(#[from] ZipError),
+    #[error(transparent)]
+    Request(#[from] reqwest::Error),
+    #[error(transparent)]
+    IO(#[from] io::Error),
+    #[error("Failed to execute maven")]
     ExecutionFailed,
-}
-
-define_from_value! {
-    MavenError {
-        Zip = ZipError,
-        Request = reqwest::Error,
-        IO = io::Error
-    }
 }
 
 /// Downloads and unzips maven from the `MAVEN_DOWNLOAD_URL`
@@ -114,7 +110,7 @@ impl<'a> MavenContext<'a> {
         let mut command = Command::new(cmd);
 
         const MAVEN_KEY: &str = "MAVEN_OPTS";
-        let mut maven_opts = std::env::var(MAVEN_KEY)
+        let maven_opts = std::env::var(MAVEN_KEY)
             .ok()
             .unwrap_or_else(|| String::from("-Xmx1024M"));
 

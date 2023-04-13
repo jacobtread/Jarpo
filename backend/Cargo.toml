@@ -9,8 +9,8 @@ license = "GNU AGPLv3"
 [dependencies]
 # Networking
 actix-web = "4.2.1"
-reqwest = { version = "0.11.12", features = ["json"] }
-tokio = { version = "1.21.1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
 # Environment & Logging
@@ -30,11 +30,11 @@ md5 = "0.7.0"
 sha256 = "1.0.3"
 
 # Misc
-cached = "0.42.0"
+cached = "0.43.0"
 chrono = { version = "0.4.22", features = ["serde"] }
-git2 = "0.16.0"
+git2 = "0.17.0"
 lazy_static = "1.4.0"
 hashcow = "0.2.0"
 patch = "0.7.0"
 async-walkdir = "0.2.0"
-derive_more = "0.99.17"
+thiserror = "1.0.40"

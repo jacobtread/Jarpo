@@ -1,20 +1,14 @@
-use crate::define_from_value;
 use crate::utils::constants::USER_AGENT;
-use std::io;
-use std::path::Path;
+use std::{io, path::Path};
+use thiserror::Error;
 use tokio::fs::write;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum NetworkError {
-    Request(reqwest::Error),
-    IO(io::Error),
-}
-
-define_from_value! {
-    NetworkError {
-        Request = reqwest::Error,
-        IO = io::Error,
-    }
+    #[error(transparent)]
+    Request(#[from] reqwest::Error),
+    #[error(transparent)]
+    IO(#[from] io::Error),
 }
 
 /// Create a reqwest client that has the User-Agent

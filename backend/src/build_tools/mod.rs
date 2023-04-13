@@ -1,24 +1,20 @@
 use crate::build_tools::mapping::Mapper;
 use crate::build_tools::maven::{MavenContext, MavenError};
 use crate::build_tools::spigot::SpigotError;
-use crate::define_from_value;
 use crate::models::build_tools::BuildDataInfo;
 use crate::utils::cmd::{execute_command, CommandError};
 use crate::utils::constants::PARODY_BUILD_TOOLS_VERSION;
-use crate::utils::files::{
-    copy_contents, delete_existing, ensure_dir_exists, ensure_is_file, move_directory,
-};
+use crate::utils::files::{copy_contents, delete_existing, ensure_dir_exists, ensure_is_file};
 use crate::utils::git::{setup_repositories, Repo, RepoError, Repositories};
 use crate::utils::hash::HashType;
 use crate::utils::net::{download_file, NetworkError};
 use crate::utils::zip::{extract_file, remove_from_zip, unzip_filtered, ZipError};
-use actix_web::web::to;
-use futures::future::{join_all, try_join_all, TryFutureExt};
+use futures::future::{try_join_all, TryFutureExt};
 use log::{info, warn};
 use std::env::current_dir;
 use std::io;
 use std::path::{Path, PathBuf, StripPrefixError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use thiserror::Error;
 use tokio::fs::{create_dir_all, read, remove_dir, remove_dir_all, symlink_dir, write};
 use tokio::try_join;
 
@@ -29,38 +25,33 @@ pub(crate) mod spigot;
 
 type BuildResult<T> = Result<T, BuildToolsError>;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum BuildToolsError {
-    IO(io::Error),
-    Repo(RepoError),
-    Spigot(SpigotError),
-    Maven(MavenError),
+    #[error("IO Error {0}")]
+    IO(#[from] io::Error),
+    #[error("Repo Error {0}")]
+    Repo(#[from] RepoError),
+    #[error("Spigot Error {0}")]
+    Spigot(#[from] SpigotError),
+    #[error("Maven Error: {0}")]
+    Maven(#[from] MavenError),
+    #[error("Missing build info")]
     MissingBuildInfo,
-    Parse(serde_json::Error),
-    Request(reqwest::Error),
-    Zip(ZipError),
-    Network(NetworkError),
-    Command(CommandError),
-    StripPrefix(StripPrefixError),
-    Patch(patches::PatchError),
+    #[error("Failed to parse response: {0}")]
+    Parse(#[from] serde_json::Error),
+    #[error("Failed request op: {0}")]
+    Request(#[from] reqwest::Error),
+    #[error("Failed zip op: {0}")]
+    Zip(#[from] ZipError),
+    #[error("Failed network op: {0}")]
+    Network(#[from] NetworkError),
+    #[error("Failed to execute command: {0}")]
+    Command(#[from] CommandError),
+    #[error("Failed to strip prefix: {0}")]
+    StripPrefix(#[from] StripPrefixError),
+    #[error("Failed to patch: {0}")]
+    Patch(#[from] patches::PatchError),
 }
-
-define_from_value! {
-    BuildToolsError {
-        IO = io::Error,
-        Repo = RepoError,
-        Spigot = SpigotError,
-        Maven = MavenError,
-        Parse = serde_json::Error,
-        Request = reqwest::Error,
-        Zip = ZipError,
-        Network = NetworkError,
-        Command = CommandError,
-        StripPrefix = StripPrefixError,
-        Patch = patches::PatchError,
-    }
-}
-
 pub struct Context<'a> {
     build_info: &'a BuildDataInfo,
     build_path: &'a Path,

@@ -1,28 +1,28 @@
-use crate::define_from_value;
 use crate::utils::files::{delete_existing, ensure_parent_exists, move_file};
-use async_zip::error::ZipError as ZipErrorInternal;
-use async_zip::tokio::read::seek::ZipFileReader;
-use async_zip::tokio::write::ZipFileWriter;
-use async_zip::ZipEntryBuilder;
+use async_zip::{
+    error::ZipError as ZipErrorInternal,
+    tokio::{read::seek::ZipFileReader, write::ZipFileWriter},
+    ZipEntryBuilder,
+};
 use futures::AsyncWriteExt;
-use std::fmt::Debug;
-use std::path::{Path, PathBuf};
-use tokio::fs::{create_dir_all, File};
-use tokio::io::copy;
-use tokio::io::{self, AsyncReadExt};
+use std::{
+    fmt::Debug,
+    path::{Path, PathBuf},
+};
+use thiserror::Error;
+use tokio::{
+    fs::{create_dir_all, File},
+    io::{self, copy, AsyncReadExt},
+};
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ZipError {
+    #[error("Missing file")]
     MissingFile,
-    IO(io::Error),
-    ZipError(ZipErrorInternal),
-}
-
-define_from_value! {
-    ZipError {
-        IO = io::Error,
-        ZipError = ZipErrorInternal,
-    }
+    #[error(transparent)]
+    IO(#[from] io::Error),
+    #[error(transparent)]
+    ZipError(#[from] ZipErrorInternal),
 }
 
 type ZipResult<T> = Result<T, ZipError>;

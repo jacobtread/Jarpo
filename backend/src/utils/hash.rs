@@ -23,7 +23,7 @@ impl HashType {
                 result.eq(hash)
             }
             HashType::SHA256 => {
-                let result = sha256::digest_bytes(data.as_ref());
+                let result = sha256::digest(data.as_ref());
                 result.eq(hash)
             }
         }

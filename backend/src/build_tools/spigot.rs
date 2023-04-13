@@ -1,4 +1,3 @@
-use crate::define_from_value;
 use crate::utils::constants::SPIGOT_VERSIONS_URL;
 use crate::utils::net::create_reqwest;
 use regex::Regex;
@@ -6,6 +5,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use std::io;
 use std::path::Path;
+use thiserror::Error;
 use tokio::fs::{read, write};
 
 /// Structure for version details response from
@@ -38,20 +38,16 @@ pub struct VersionRefs {
 
 /// Errors when attempting to retrieve a version from
 /// spigots servers
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum SpigotError {
-    UnknownVersion,
-    Request(reqwest::Error),
-    IO(io::Error),
-    SerdeError(serde_json::Error),
-}
-
-define_from_value! {
-    SpigotError {
-        Request = reqwest::Error,
-        IO = io::Error,
-        SerdeError = serde_json::Error,
-    }
+    #[error("Unable to find spigot version \"{0}\"")]
+    UnknownVersion(String),
+    #[error(transparent)]
+    Request(#[from] reqwest::Error),
+    #[error(transparent)]
+    IO(#[from] io::Error),
+    #[error(transparent)]
+    SerdeError(#[from] serde_json::Error),
 }
 
 type SpigotResult<T> = Result<T, SpigotError>;
@@ -63,7 +59,7 @@ pub async fn get_version(version: &str) -> SpigotResult<SpigotVersion> {
     let url = format!("{}{}.json", SPIGOT_VERSIONS_URL, version);
     let response = client.get(url).send().await?;
     if response.status() == StatusCode::NOT_FOUND {
-        return Err(SpigotError::UnknownVersion);
+        return Err(SpigotError::UnknownVersion(version.to_string()));
     }
     let version = response
         .json::<SpigotVersion>()
@@ -99,7 +95,7 @@ pub async fn download_version(path: &Path, version: &str) -> SpigotResult<()> {
     let client = create_reqwest()?;
     let response = client.get(url).send().await?;
     if response.status() == StatusCode::NOT_FOUND {
-        return Err(SpigotError::UnknownVersion);
+        return Err(SpigotError::UnknownVersion(version.to_string()));
     }
     let bytes = response.bytes().await?;
     write(file_path, bytes).await?;

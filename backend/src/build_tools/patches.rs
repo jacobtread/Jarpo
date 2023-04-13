@@ -1,36 +1,23 @@
 use async_walkdir::WalkDir;
+use cached::instant::SystemTime;
 use futures::StreamExt;
-use log::{info, warn};
+use log::{debug, info, warn};
 use patch::{Line, Patch};
-use std::fmt::{Display, Formatter};
 use std::io;
 use std::path::PathBuf;
+use thiserror::Error;
 use tokio::fs::{create_dir_all, read, write};
 
-use crate::define_from_value;
-
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum PatchError {
-    IO(io::Error),
+    #[error("{0}")]
+    IO(#[from] io::Error),
+    #[error("Missing file at path: {0}")]
     MissingFile(PathBuf),
+    #[error("Patch target file path name was invalid")]
     InvalidPath,
+    #[error("Failed to patch")]
     Invalid,
-}
-
-define_from_value! {
-  PatchError {
-    IO = io::Error,
-  }
-}
-impl Display for PatchError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PatchError::IO(err) => write!(f, "IO Error Occurred: {err:?}"),
-            PatchError::MissingFile(err) => write!(f, "Unable to find corresponding file: {err:?}"),
-            PatchError::InvalidPath => write!(f, "Patch target file path name was invalid"),
-            _ => write!(f, "Failed patch"),
-        }
-    }
 }
 
 type PatchResult<T> = Result<T, PatchError>;
@@ -40,6 +27,10 @@ pub async fn apply_patches(
     path_original: PathBuf,
     path_output: PathBuf,
 ) -> PatchResult<()> {
+    let start = SystemTime::now();
+
+    debug!("Applying patches...");
+
     // The number of patches applied
     let mut count = 0usize;
     let mut walk = WalkDir::new(patches);
@@ -80,7 +71,11 @@ pub async fn apply_patches(
         }
     }
 
-    info!("Total patches {count}");
+    if let Ok(elapsed) = start.elapsed() {
+        debug!("Finished patching: {:.2?}", elapsed)
+    }
+
+    debug!("Patched {count} files");
 
     Ok(())
 }

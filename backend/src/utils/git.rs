@@ -1,29 +1,30 @@
 use crate::build_tools::spigot::{SpigotVersion, VersionRefs};
-use crate::define_from_value;
 use git2::{BranchType, ObjectType, Oid, Repository, ResetType, Signature};
 use log::info;
-use std::fmt::{Display, Formatter};
-use std::fs::remove_dir_all;
-use std::io;
-use std::path::{Path, PathBuf};
-use tokio::task::{spawn_blocking, JoinError};
-use tokio::try_join;
+use std::{
+    fmt::{Display, Formatter},
+    fs::remove_dir_all,
+    io,
+    path::{Path, PathBuf},
+};
+use thiserror::Error;
+use tokio::{
+    task::{spawn_blocking, JoinError},
+    try_join,
+};
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum RepoError {
-    GitError(git2::Error),
-    IO(io::Error),
-    JoinError(JoinError),
+    #[error(transparent)]
+    GitError(#[from] git2::Error),
+    #[error(transparent)]
+    IO(#[from] io::Error),
+    #[error(transparent)]
+    JoinError(#[from] JoinError),
+    #[error("Failed expected commit")]
     ExpectedCommit,
+    #[error("Failed mappings ref")]
     MappingsRef,
-}
-
-define_from_value! {
-    RepoError {
-        GitError = git2::Error,
-        IO = io::Error,
-        JoinError = JoinError,
-    }
 }
 
 /// Enum representing the different know repositories that

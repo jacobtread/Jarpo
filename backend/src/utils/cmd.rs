@@ -1,20 +1,16 @@
-use crate::define_from_value;
 use log::{error, info, warn};
 use std::io;
 use std::path::Path;
 use std::process::{ExitStatus, Output};
+use thiserror::Error;
 use tokio::process::Command;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum CommandError {
-    IO(io::Error),
+    #[error(transparent)]
+    IO(#[from] io::Error),
+    #[error("Missing command")]
     MissingCommand,
-}
-
-define_from_value! {
-    CommandError {
-        IO = io::Error
-    }
 }
 
 /// Executes the provided `command` formatting it with the provided arguments `args_in`

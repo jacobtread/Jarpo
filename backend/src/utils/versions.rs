@@ -1,9 +1,8 @@
-use crate::define_from_value;
 use crate::utils::constants::MANIFEST_URL;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use std::fmt::{Display, Formatter};
 use std::io;
+use thiserror::Error;
 
 #[derive(Debug, Deserialize)]
 pub struct LatestVersion {
@@ -41,26 +40,12 @@ pub struct VersionManifest {
     pub versions: Vec<Version>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum VersionsError {
-    IO(io::Error),
-    Request(reqwest::Error),
-}
-
-define_from_value! {
-    VersionsError {
-        IO = io::Error,
-        Request = reqwest::Error,
-    }
-}
-
-impl Display for VersionsError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            VersionsError::IO(err) => f.write_str(&format!("IO Error: {}", err)),
-            VersionsError::Request(err) => f.write_str(&format!("Request error: {}", err)),
-        }
-    }
+    #[error(transparent)]
+    IO(#[from] io::Error),
+    #[error(transparent)]
+    Request(#[from] reqwest::Error),
 }
 
 /// Load the versions manifest from the `MANIFEST_URL` this is a JSON value
