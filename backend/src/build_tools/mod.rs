@@ -605,7 +605,7 @@ async fn apply_cb_patches(context: &Context<'_>, decomp_path: &PathBuf) -> Build
     let output_path = cb_path.join("src/main/java");
 
     info!("Copying decompile output to craftbukkit");
-    copy_contents(&decomp_path, &output_path).await?;
+    // copy_contents(&decomp_path, &output_path).await?;
 
     info!("Patching decompiled output");
 

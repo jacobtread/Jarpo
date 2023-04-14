@@ -31,6 +31,10 @@ pub async fn execute_command(
     if std::env::var("MAVEN_OPTS").is_err() {
         command.env("MAVEN_OPTS", "-Xmx1024M");
     }
+    command.env(
+        "_JAVA_OPTIONS",
+        "-Djdk.net.URLClassPath.disableClassPathURLCheck=true",
+    );
 
     let status = piped_command(command).await?;
 

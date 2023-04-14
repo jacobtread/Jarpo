@@ -18,7 +18,7 @@ async fn main() {
         APP_VERSION, PARODY_BUILD_TOOLS_VERSION
     );
 
-    run_build_tools("1.18")
+    run_build_tools("latest")
         .await
         .unwrap();
 }

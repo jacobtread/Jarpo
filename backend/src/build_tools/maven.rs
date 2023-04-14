@@ -116,6 +116,7 @@ impl<'a> MavenContext<'a> {
             "_JAVA_OPTIONS",
             "-Djdk.net.URLClassPath.disableClassPathURLCheck=true",
         );
+        command.env_remove("M2_HOME");
         command.current_dir(working_dir);
         command.args(new_args);
         let status = piped_command(command).await?;
