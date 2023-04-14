@@ -150,6 +150,9 @@ pub async fn run_build_tools(version: &str) -> BuildResult<()> {
 
     info!("Compiling bukkit & craftbukkit...\n\n");
     compile_bukkit(&context).await?;
+
+    apply_spigot_patches(&context).await?;
+
     info!("Compiling spigot...\n\n");
     compile_spigot(&context).await?;
 
@@ -587,6 +590,38 @@ async fn decompile(context: &Context<'_>) -> BuildResult<PathBuf> {
     Ok(decomp_path)
 }
 
+async fn apply_spigot_patches(context: &Context<'_>) -> BuildResult<()> {
+    let build_path = context.build_path;
+    let sp_path = build_path.join("spigot");
+
+    let cb_path = build_path.join("craftbukkit");
+    let bk_path = build_path.join("bukkit");
+
+    let ss_path = sp_path.join("Spigot-Server");
+    let sa_path = sp_path.join("Spigot-API");
+
+    try_join!(
+        copy_contents(cb_path, ss_path),
+        copy_contents(bk_path, sa_path)
+    )?;
+
+    let cb_patches = sp_path.join("CraftBukkit-Patches");
+    let bk_patches = sp_path.join("Bukkit-Patches");
+
+    info!("Applying Spigot Craft Bukkit Patches");
+
+    Repo::apply_patches(
+        &context
+            .repositories
+            .craft_bukkit,
+        &cb_patches,
+    );
+    info!("Applying Spigot Bukkit Patches");
+    Repo::apply_patches(&context.repositories.bukkit, &bk_patches);
+
+    Ok(())
+}
+
 /// Applies the CraftBukkit patches from craftbukkit/nms-patches to the
 /// decompiled sources
 async fn apply_cb_patches(context: &Context<'_>, decomp_path: &PathBuf) -> BuildResult<()> {
@@ -603,9 +638,6 @@ async fn apply_cb_patches(context: &Context<'_>, decomp_path: &PathBuf) -> Build
 
     let patch_path = cb_path.join("nms-patches");
     let output_path = cb_path.join("src/main/java");
-
-    info!("Copying decompile output to craftbukkit");
-    // copy_contents(&decomp_path, &output_path).await?;
 
     info!("Patching decompiled output");
 
@@ -669,21 +701,6 @@ async fn compile_spigot(context: &Context<'_>) -> BuildResult<()> {
     let maven = &context.maven;
     let build_path = context.build_path;
     let spigot_path = build_path.join("spigot");
-
-    let sh = if context
-        .build_info
-        .server_url
-        .is_some()
-    {
-        "sh".to_string()
-    } else if let Ok(env) = std::env::var("SHELL") {
-        env.trim().to_string()
-    } else {
-        "bash".to_string()
-    };
-
-    info!("Patching Spigot");
-    execute_command(&spigot_path, &sh, &["applyPatches.sh"]).await?;
 
     info!("Compiling Spigot");
     maven

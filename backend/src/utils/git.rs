@@ -1,6 +1,8 @@
 use crate::build_tools::spigot::{SpigotVersion, VersionRefs};
-use git2::{BranchType, ObjectType, Oid, Repository, ResetType, Signature};
-use log::info;
+use async_walkdir::WalkDir;
+use futures::StreamExt;
+use git2::{BranchType, Diff, ObjectType, Oid, Repository, ResetType, Signature};
+use log::{info, warn};
 use std::{
     fmt::{Display, Formatter},
     fs::remove_dir_all,
@@ -9,6 +11,7 @@ use std::{
 };
 use thiserror::Error;
 use tokio::{
+    fs::read,
     task::{spawn_blocking, JoinError},
     try_join,
 };
@@ -100,6 +103,34 @@ impl Repo {
         let object = repo.find_object(ref_id, Some(ObjectType::Commit))?;
         let commit = object.peel(ObjectType::Commit)?;
         repo.reset(&commit, ResetType::Hard, None)?;
+        Ok(())
+    }
+
+    pub async fn apply_patches(repo: &Repository, patches: &Path) -> Result<(), RepoError> {
+        let mut walk = WalkDir::new(patches);
+        while let Some(entry) = walk.next().await {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name
+                .as_ref()
+                .ends_with(".patch")
+            {
+                let patch_path = entry.path();
+                let contents = match read(&patch_path).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        warn!(
+                            "Unable to apply patch at {patch_path:?} (Unable to read file): {err}"
+                        );
+                        continue;
+                    }
+                };
+                let diff = Diff::from_buffer(&contents)?;
+                info!("Applied patch at {name:?}");
+                repo.apply(&diff, git2::ApplyLocation::Both, None)?;
+            }
+        }
         Ok(())
     }
 
