@@ -100,73 +100,92 @@ async fn apply_patch(
 
     let contents = read(&path).await?;
     let contents = String::from_utf8_lossy(&contents);
-    let mut lines = contents
+    let lines = contents
         .lines()
         .collect::<Vec<&str>>();
-    let lines_len = lines.len();
 
-    let hunks = &patch.hunks;
-
-    for hunk in hunks {
-        let start = (hunk.old_range.start as usize) - 1;
-        if start > lines_len {
-            warn!("Hunk bounds outside file length: (Got: {start}, Length: {lines_len})");
-            return Err(PatchError::Invalid);
-        }
-        if !check_context(start.clone(), &hunk.lines, &lines) {
-            warn!("Hunk context did not match");
-            return Err(PatchError::Invalid);
-        }
-    }
+    let hunks = patch.hunks;
+    let mut chunks = Vec::with_capacity(hunks.len());
 
     for hunk in hunks {
-        let start = (hunk.new_range.start as usize) - 1;
-        if start > lines_len {
-            warn!("Hunk bounds outside file length: (Got: {start}, Length: {lines_len})");
-            return Err(PatchError::Invalid);
-        }
-        let mut line_num = start;
-        let mut added = 0;
+        let old_range = &hunk.old_range;
+        let old_start = (old_range.start - 1) as usize;
+        let old_length = old_range.count as usize;
+        let old_end = old_start + old_length;
 
-        for line in &hunk.lines {
+        // match lines.get(old_start..old_end) {
+        //     Some(lines) => {
+        //         if !check_context(&hunk.lines, lines) {
+        //             return Err(PatchError::Invalid);
+        //         }
+        //     }
+        //     None => {}
+        // };
+
+        let mut target = Vec::with_capacity(hunk.new_range.count as usize);
+        for line in hunk.lines {
             match line {
                 Line::Add(value) => {
-                    lines.insert(line_num, *value);
-                    line_num += 1;
+                    target.push(value);
                 }
-                Line::Remove(_) => {
-                    lines.remove(line_num);
-                }
-                Line::Context(_) => {
-                    line_num += 1;
-                }
+                Line::Remove(_) => {}
+                Line::Context(line) => target.push(line),
             }
         }
+
+        chunks.push(Chunk {
+            lines: target,
+            length: old_length,
+            start: old_start,
+        })
+    }
+
+    let mut index = 0;
+    let mut output = Vec::new();
+
+    for chunk in chunks {
+        if index < chunk.start {
+            let slice = lines
+                .get(index..chunk.start)
+                .unwrap();
+            output.extend_from_slice(slice);
+        }
+
+        output.extend(&chunk.lines);
+
+        index = chunk.start + chunk.length;
+    }
+
+    if index < lines.len() {
+        output.extend_from_slice(&lines[index..]);
     }
 
     let output_path = path_output.join(old_path);
     if let Some(parent) = output_path.parent() {
         create_dir_all(parent).await?;
     }
-    let out = lines.join("\n");
+    let out = output.join("\n");
     write(output_path, out).await?;
     Ok(())
 }
 
-fn check_context(start: usize, hunk_lines: &Vec<Line>, lines: &Vec<&str>) -> bool {
-    let mut line_num = start;
-    for line in hunk_lines {
-        let value = match line {
-            Line::Remove(value) => value,
-            Line::Context(value) => value,
+struct Chunk<'a> {
+    lines: Vec<&'a str>,
+    start: usize,
+    length: usize,
+}
+
+fn check_context(hunk_lines: &[Line], lines: &[&str]) -> bool {
+    for (line, &actual_line) in hunk_lines.iter().zip(lines) {
+        let line = match line {
+            Line::Remove(value) => *value,
+            Line::Context(value) => *value,
             Line::Add(_) => continue,
         };
-        let line_at = lines[line_num];
-        if !line_at.eq(*value) {
-            warn!("({start}, {line_num}) Fault at: {line_at} expected: {value}");
+        if !actual_line.eq(line) {
+            warn!("(Fault at: {actual_line} expected: {line}");
             return false;
         }
-        line_num += 1;
     }
     return true;
 }

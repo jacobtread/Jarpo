@@ -1,3 +1,6 @@
+// Allow unused while ongoing development
+#![allow(unused)]
+
 use crate::build_tools::run_build_tools;
 use crate::utils::constants::{APP_VERSION, PARODY_BUILD_TOOLS_VERSION};
 
