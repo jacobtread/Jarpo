@@ -106,6 +106,10 @@ impl Repo {
         Ok(())
     }
 
+    pub fn open(path: &Path) -> Result<Repository, RepoError> {
+        Ok(Repository::open(path)?)
+    }
+
     pub async fn apply_patches(repo: &Repository, patches: &Path) -> Result<(), RepoError> {
         let mut walk = WalkDir::new(patches);
         while let Some(entry) = walk.next().await {
@@ -126,8 +130,11 @@ impl Repo {
                         continue;
                     }
                 };
-                let diff = Diff::from_buffer(&contents)?;
-                info!("Applied patch at {name:?}");
+                let contents = String::from_utf8_lossy(&contents).to_string();
+                let contents = contents.replace("\r\n", "\n");
+
+                let diff = Diff::from_buffer(contents.as_bytes())?;
+                info!("Applied spigot patch at {name:?}");
                 repo.apply(&diff, git2::ApplyLocation::Both, None)?;
             }
         }

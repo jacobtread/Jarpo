@@ -601,23 +601,21 @@ async fn apply_spigot_patches(context: &Context<'_>) -> BuildResult<()> {
     let sa_path = sp_path.join("Spigot-API");
 
     try_join!(
-        copy_contents(cb_path, ss_path),
-        copy_contents(bk_path, sa_path)
+        copy_contents(cb_path, &ss_path),
+        copy_contents(bk_path, &sa_path)
     )?;
 
     let cb_patches = sp_path.join("CraftBukkit-Patches");
     let bk_patches = sp_path.join("Bukkit-Patches");
 
+    let a = Repo::open(&ss_path)?;
+    let b = Repo::open(&sa_path)?;
+
     info!("Applying Spigot Craft Bukkit Patches");
 
-    Repo::apply_patches(
-        &context
-            .repositories
-            .craft_bukkit,
-        &cb_patches,
-    );
+    Repo::apply_patches(&a, &cb_patches).await?;
     info!("Applying Spigot Bukkit Patches");
-    Repo::apply_patches(&context.repositories.bukkit, &bk_patches);
+    Repo::apply_patches(&b, &bk_patches).await?;
 
     Ok(())
 }
